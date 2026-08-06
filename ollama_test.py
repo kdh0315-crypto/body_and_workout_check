@@ -8,7 +8,6 @@ if __name__ == "__main__":
     # 아래는 일부러 몇 개를 이상값으로 넣은 예시.
     sample_metrics = {
         "shoulder_tilt":     5.2,   # 정상 0~2 초과 -> 이상(어깨 비대칭)
-        "pelvic_tilt_lat":   1.1,   # 정상
         "knee_valgus":       2.0,   # 정상
         "forward_head":      42.0,  # 정상 55~65 미달 -> 이상(거북목 심함)
         "round_shoulder":    11.0,   # 정상 0~10 초과 -> 이상(라운드숄더)

@@ -217,6 +217,47 @@ def create_pose_points(landmarks):
 
     return normalized_points, neck_center
 
+# ========================================================
+# +. Pelvic tilt Ant
+# ========================================================
+# additional function to calculate midpoint in 2D (no Z dimension)
+def midpoint2D(point_a, point_b):
+    midpoint = np.array([
+        (point_a.x + point_b.x) / 2.0,
+        (point_a.y + point_b.y) / 2.0], dtype=np.float32)
+
+    return midpoint
+
+# additional function to calculate two vectors' angle 
+# there is rule that vector is 'numpy array'
+def cal_vector_angle(vector_a, vector_b):
+    # do inner product
+    dot  = np.dot(vector_a, vector_b)
+    norm = np.linalg.norm(vector_a) * np.linalg.norm(vector_b)
+    cos  = np.clip(dot / norm, -1, 1) # clip to protect domain error at arccos
+
+    return np.degrees(np.arccos(cos)) # calculate angle with arccos
+
+def get_pelvic_tilt_ant(landmarks):
+    # get center value of hip, shoulder, and knee
+    hip_center = midpoint2D(landmarks[LANDMARK_INDEX["LEFT_HIP"]], landmarks[LANDMARK_INDEX["RIGHT_HIP"]])
+    shoulder_center = midpoint2D(landmarks[LANDMARK_INDEX["LEFT_SHOULDER"]], landmarks[LANDMARK_INDEX["RIGHT_SHOULDER"]])
+    knee_center = midpoint2D(landmarks[LANDMARK_INDEX["LEFT_KNEE"]], landmarks[LANDMARK_INDEX["RIGHT_KNEE"]])
+
+    # make vector hip-shoulder & hip-knee
+    shoulder_hip = shoulder_center - hip_center
+    hip_knee     = hip_center - shoulder_center
+
+    # make angle with hip-shoulder & hip-knee & return
+    return cal_vector_angle(shoulder_hip, hip_knee)
+
+# =========================================================
+# +. knee valgus
+# =========================================================
+def get_knee_valgus(landmarks):
+    # make left & right knee-ankle vector
+    left_knee_ankle = np.array([])
+    
 
 # =========================================================
 # 4. 판단용 특징값 생성

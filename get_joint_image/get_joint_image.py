@@ -21,28 +21,34 @@ def process_image(image_path, output_dir, mode="skeleton_only", save_json=True):
         print(f"[SKIP] 읽기 실패: {image_path}")
         return None
 
+    # get width & height from input image
     h, w = image.shape[:2]
+    # change color BGR to RGB
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    with mp_pose.Pose(
-        static_image_mode=True,      # 단일 이미지는 True
-        model_complexity=2,          # 0/1/2, 2가 가장 정확(느림)
-        enable_segmentation=False,
-        min_detection_confidence=0.5,
-    ) as pose:
-        results = pose.process(rgb)
+    # get pose result set
+    results = mp_pose.Pose(
+            static_image_mode=True,      # 단일 이미지는 True
+            model_complexity=2,          # 0/1/2, 2가 가장 정확(느림)
+            enable_segmentation=False,
+            min_detection_confidence=0.5,
+            ).process(rgb)
 
+    # check the joint is
     if not results.pose_landmarks:
         print(f"[NO POSE] 관절 미검출: {image_path}")
         return None
 
-    # 출력 캔버스 선택
+    # select canvas
     if mode == "overlay":
         canvas = image.copy()
-    else:  # skeleton_only
+    # skeleton_only
+    else:
+        # empty canvas
+        # image value is rgb, so need 3 channel
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
 
-    # 관절 + 연결선 그리기
+    # draw joint & line
     mp_drawing.draw_landmarks(
         canvas,
         results.pose_landmarks,
@@ -50,29 +56,29 @@ def process_image(image_path, output_dir, mode="skeleton_only", save_json=True):
         landmark_drawing_spec=mp_drawing.DrawingSpec(
             color=(0, 255, 0), thickness=2, circle_radius=3),
         connection_drawing_spec=mp_drawing.DrawingSpec(
-            color=(255, 255, 255), thickness=2),
+            color=(255, 255, 255), thickness=2)
     )
 
-    # 저장
+    # save image file
     base = os.path.splitext(os.path.basename(image_path))[0]
-    out_path = os.path.join(output_dir, f"{base}_pose.png")
+    out_path = os.path.join(output_dir, f"{base}_joint.png")
     cv2.imwrite(out_path, canvas)
 
-    # 좌표 JSON 저장 (자세 분석용)
-    if save_json:
-        landmarks = []
-        for idx, lm in enumerate(results.pose_landmarks.landmark):
-            landmarks.append({
-                "id": idx,
-                "name": mp_pose.PoseLandmark(idx).name,
-                "x_px": lm.x * w,
-                "y_px": lm.y * h,
-                "z": lm.z,              # 상대 깊이
-                "visibility": lm.visibility,
-            })
-        json_path = os.path.join(output_dir, f"{base}_landmarks.json")
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(landmarks, f, ensure_ascii=False, indent=2)
+    # # 좌표 JSON 저장 (자세 분석용)
+    # if save_json:
+    #     landmarks = []
+    #     for idx, lm in enumerate(results.pose_landmarks.landmark):
+    #         landmarks.append({
+    #             "id": idx,
+    #             "name": mp_pose.PoseLandmark(idx).name,
+    #             "x_px": lm.x * w,
+    #             "y_px": lm.y * h,
+    #             "z": lm.z,              # 상대 깊이
+    #             "visibility": lm.visibility,
+    #         })
+    #     json_path = os.path.join(output_dir, f"{base}_landmarks.json")
+    #     with open(json_path, "w", encoding="utf-8") as f:
+    #         json.dump(landmarks, f, ensure_ascii=False, indent=2)
 
     print(f"[OK] {out_path}")
     return out_path
@@ -95,5 +101,5 @@ if __name__ == "__main__":
     batch_process(
         input_dir="./input_images",
         output_dir="./output_images",
-        mode="skeleton_only",   # 또는 "overlay"
+        mode="skeleton_only"
     )

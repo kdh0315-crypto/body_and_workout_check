@@ -2,7 +2,7 @@ import mediapipe as mp
 import cv2
 import numpy as np
 
-from basic_fn import *
+from module.basic_fn import *
 
 def get_landmark_xy(landmarks, landmark_enum, image_width, image_height):
     """정규화된 좌표(0~1)를 실제 픽셀 좌표로 변환해서 반환"""
@@ -44,7 +44,7 @@ class CaptureForm():
                 print("Side Image Capture complete")
                 return self.front_img, self.side_img
 
-        elif key == 255: # no key input check
+        elif key != 255: # no key input check
             self.key_released = True
 
         return None

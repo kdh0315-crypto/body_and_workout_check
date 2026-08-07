@@ -1,4 +1,4 @@
-from project.module.workout_sel import *
+from module.workout_sel import *
 
 
 def _mock_response():

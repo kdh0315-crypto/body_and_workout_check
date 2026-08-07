@@ -1,7 +1,9 @@
 import math
 
-#FHA
 
+# ========================================================
+# +. FHA
+# ========================================================
 def calculate_fha(neck_center, head, width, height):
     neck_x = neck_center[0] * width
     neck_y = neck_center[1] * height
@@ -40,8 +42,10 @@ def classify_fha(fha_deg):
 
     # 60도를 초과한 경우
     return "out_of_range"
+# ========================================================
+# +.FSA 
+# ========================================================
 
-#FSA
 def calculate_fsa(neck_center, shoulder, width, height):
 
     # pixcel convertion real number
@@ -96,7 +100,9 @@ def classify_shoulder_tilt(angle):
     return "normal"
      
 
-#thoracic kyphosis angle
+# ========================================================
+# +.thoracic kyphosis
+# ========================================================
 
 def calculate_thoracic_kyphosis(
     head,

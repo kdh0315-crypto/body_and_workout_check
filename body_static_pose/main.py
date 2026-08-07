@@ -16,6 +16,12 @@ from upper_body import (
     calculate_thoracic_kyphosis,
     classify_thoracic_kyphosis,
 )
+from lower_body import (
+    calculate_pelvic_tilt_ant,
+    classify_pelvic_tilt_ant,
+    calculate_knee_valgus_angle,
+
+)
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
@@ -72,14 +78,16 @@ POSE_CONNECTIONS = [
 
 
 FEATURE_DISPLAY = [
-    ("Shoulder tilt", "shoulder_tilt_deg"),
-    ("Hip tilt", "hip_tilt_deg"),
-    ("Left knee", "left_knee_alignment"),
-    ("Right knee", "right_knee_alignment"),
+  
     ####from upper.py####
     ("FHA", "fha_deg"),
-    ("Thoracic Kyphosis", "thoracic_kyphosis_deg"),
     ("FSA", "fsa_deg"),
+    ("Thoracic Kyphosis", "thoracic_kyphosis_deg"),
+    ("Shoulder tilt", "shoulder_tilt_deg"),
+    #### from lower_body.py ####
+    ("Pelvic tilt Ant", "pelvic_tilt_ant_deg"),
+    ("Left knee valgus", "left_knee_valgus_deg"),
+    ("Right knee valgus", "right_knee_valgus_deg"),
 ]
 
 
@@ -302,7 +310,7 @@ def draw_feature_values(frame, features):
             (20, y_position),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
-            (255, 255, 255),
+            (0, 0, 255),
             2,
             cv2.LINE_AA,
         )
@@ -437,7 +445,33 @@ def main():
                             width,
                             height,
                         ),
-
+                        # ===== from lower_body.py =====
+                        
+                        "pelvic_tilt_ant_deg": calculate_pelvic_tilt_ant(
+                            points["LS"],
+                            points["RS"],
+                            points["LH"],
+                            points["RH"],
+                            points["LK"],
+                            points["RK"],
+                            width,
+                            height,
+                            ),
+                        "left_knee_valgus_deg": calculate_knee_valgus_angle(
+                            points["LH"],
+                            points["LK"],
+                            points["LA"],
+                            width,
+                            height,
+                        ),
+                        
+                        "right_knee_valgus_deg": calculate_knee_valgus_angle(
+                            points["RH"],
+                            points["RK"],
+                            points["RA"],
+                            width,
+                            height,
+                        ),
                     }
 
                     statuses = {
@@ -449,7 +483,10 @@ def main():
                             "thoracic_kyphosis": classify_thoracic_kyphosis(
                                 features["thoracic_kyphosis_deg"]
                             ),
-                                }                   
+                            "pelvic_tilt_ant": classify_pelvic_tilt_ant(
+                                features["pelvic_tilt_ant_deg"]
+                            )
+                        }
 
                     draw_debug_pose(
                         frame,

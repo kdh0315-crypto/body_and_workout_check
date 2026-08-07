@@ -4,10 +4,10 @@ import cv2
 
 import time
 
-from ollama_op import *
-from workout_sel import *
-from mediapipe_op import *
-from test_fn import *
+from project.module.ollama_op import *
+from project.module.workout_sel import *
+from project.module.mediapipe_op import *
+from project.module.test_fn import *
 
 def capture_image(frame):
     # copy the frame data
@@ -26,7 +26,6 @@ if __name__ == "__main__":
         "pelvic_tilt_ant":   7.0,   # 정상
     }
 
-    # 
 
     # capture image to test body form
     cap_form = CaptureForm()

@@ -4,6 +4,11 @@ from PySide6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QPushB
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
 
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
+    QSpinBox, QComboBox, QGroupBox, QRadioButton, QButtonGroup
+)
+
 from module.mediapipe_op import *      # CaptureForm, save_with_pose 등
 from module.workout_sel import *
 
@@ -88,9 +93,58 @@ class CameraView(QWidget):
             self.on_capture_done(front_img, side_img)
 
     def on_capture_done(self, front_img, side_img):
-        """촬영 완료 후 다음 단계(각도 계산 → 추천)로 넘어가는 자리."""
+        """촬영 완료 후 스켈레톤 추출 → 저장 → 화면 표시."""
         print("촬영 완료. user_info:", self.user_info)
-        # 여기서 각도 계산 → find_abnormal → ask_ollama 로 이어가면 됨
+
+        # 정면/측면 각각 스켈레톤 그려 저장 + 랜드마크 결과 반환
+        front_results = save_with_pose(front_img, "front_pose.jpg")
+        side_results  = save_with_pose(side_img,  "side_pose.jpg")
+
+        # 감지 실패 처리
+        front_ok = front_results.pose_landmarks is not None
+        side_ok  = side_results.pose_landmarks is not None
+
+        if not front_ok or not side_ok:
+            fail = []
+            if not front_ok: fail.append("정면")
+            if not side_ok:  fail.append("측면")
+            self.status_label.setText(
+                f"{', '.join(fail)} 포즈 감지 실패 — 다시 촬영해주세요"
+            )
+            self._restart()
+            return
+
+        self.status_label.setText("스켈레톤 추출 완료")
+
+        # 저장된 스켈레톤 이미지를 화면에 표시
+        self._show_skeleton("front_pose.jpg", "side_pose.jpg")
+
+        # 이후 각도 계산 → find_abnormal → ask_ollama 로 이어감
+        # (다음 단계에서 front_results / side_results 를 사용)
+        self.front_results = front_results
+        self.side_results = side_results
+
+    def _show_skeleton(self, front_path, side_path):
+        """저장된 정면/측면 스켈레톤 이미지를 나란히 표시."""
+        # 정면 이미지를 video_label 자리에 표시
+        front = cv2.imread(front_path)
+        rgb = cv2.cvtColor(front, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+        self.video_label.setPixmap(
+            QPixmap.fromImage(qimg).scaled(
+                self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        )
+        # 촬영 버튼은 더 이상 필요 없으니 비활성화
+        self.capture_btn.setEnabled(False)
+
+    def _restart(self):
+        """감지 실패 시 촬영을 처음부터 다시."""
+        self.cap_form = CaptureForm()          # 촬영 상태 초기화
+        self.status_label.setText("정면 자세를 잡고 '촬영'을 누르세요")
+        if not self.timer.isActive():
+            self.timer.start(30)               # 카메라 루프 재시작
 
     def closeEvent(self, event):
         """창이 닫힐 때 카메라 해제."""

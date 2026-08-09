@@ -3,71 +3,13 @@ import cv2
 import numpy as np
 
 from module.basic_fn import *
-from upper_body import *
-from lower_body import *
+# from upper_body import *
+# from lower_body import *
 
 
-# 프로젝트에서 사용할 MediaPipe Pose 랜드마크
-# 짧은 이름을 랜드마크 번호에 바로 연결한다.
-POINT_MAPPING = {
-    "LS": 11,  # Left Shoulder
-    "RS": 12,  # Right Shoulder
-    "LE": 13,  # Left Elbow
-    "RE": 14,  # Right Elbow
-    "LW": 15,  # Left Wrist
-    "RW": 16,  # Right Wrist
-    "LH": 23,  # Left Hip
-    "RH": 24,  # Right Hip
-    "LK": 25,  # Left Knee
-    "RK": 26,  # Right Knee
-    "LA": 27,  # Left Ankle
-    "RA": 28,  # Right Ankle
-}
-
-LEFT_EAR_INDEX = 7
-RIGHT_EAR_INDEX = 8
-LEFT_SHOULDER_INDEX = 11
-RIGHT_SHOULDER_INDEX = 12
-
-# 화면에 표시할 연결선
-POSE_CONNECTIONS = [
-    ("HEAD", "NECK_CENTER"),
-    ("LS", "RS"),
-    ("LH", "RH"),
-
-    ("LS", "LE"),
-    ("LE", "LW"),
-    ("RS", "RE"),
-    ("RE", "RW"),
-
-    ("LS", "LH"),
-    ("LH", "LK"),
-    ("LK", "LA"),
-
-    ("RS", "RH"),
-    ("RH", "RK"),
-    ("RK", "RA"),
-]
-
-
-FEATURE_DISPLAY = [
-    ####from upper.py####
-    ("FHA", "fha_deg"),
-    ("FSA", "fsa_deg"),
-    ("Thoracic Kyphosis", "thoracic_kyphosis_deg"),
-    ("Shoulder tilt", "shoulder_tilt_deg"),
-    #### from lower_body.py ####
-    ("Pelvic tilt Ant", "pelvic_tilt_ant_deg"),
-    ("Left knee valgus", "left_knee_valgus_deg"),
-    ("Right knee valgus", "right_knee_valgus_deg"),
-]
-
-def get_landmark_xy(landmarks, landmark_enum, image_width, image_height):
-    """정규화된 좌표(0~1)를 실제 픽셀 좌표로 변환해서 반환"""
-    lm = landmarks[landmark_enum.value]
-    return [lm.x * image_width, lm.y * image_height], lm.visibility
-
-
+# =====================================
+# Capture Image to check body form
+# =====================================
 class CaptureForm():
     def __init__(self):
         # set initial image to None
@@ -108,12 +50,89 @@ class CaptureForm():
 
         return None
 
-    def get_joint_point(self):
-        None
+# =====================================
+# Initialize Mediapipe
+# =====================================
+mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
 
-    def get_body_angle(self):
-        # Front image
-        # upper body
-        shoulder_tilt = calculate_shoulder_tilt(self.front_img)
-        # lower body
-        knee_valgus = calculate_knee_valgus_angle()
+
+pose = mp_pose.Pose(
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
+# =====================================
+# Get landmark coordinate
+# =====================================
+def get_landmark_xy(landmarks, landmark_enum, image_width, image_height):
+    """Return normalized coordinate into real pixel coordinate"""
+    lm = landmarks[landmark_enum.value]
+    return [lm.x * image_width, lm.y * image_height], lm.visibility
+
+
+# =====================================
+# Extract pose landmark from image
+# =====================================
+def extract_landmarks(image):
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    rgb.flags.writeable = False
+    result = pose.process(rgb)
+    return result
+
+# =====================================
+# Draw landmarks on Image
+# =====================================
+def draw_skeleton(image, results):
+    annotated = image.copy()
+    if results.pose_landmarks:
+        mp_drawing.draw_landmarks(
+            annotated,
+            results.pose_landmarks,
+            mp_pose.POSE_CONNECTIONS,
+            mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+            mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2)
+        )
+    return annotated
+
+
+# =====================================
+# Draw landmarks on white image - just want to see skeleton
+# =====================================
+def draw_skeleton_on_white(image, results):
+    white = np.ones_like(image) * 255
+    if results.pose_landmarks:
+        mp_drawing.draw_landmarks(
+            white,
+            results.pose_landmarks,
+            mp_pose.POSE_CONNECTIONS,
+            mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+            mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2)
+        )
+    return white
+
+
+# =====================================
+# Save skeleton only image
+# =====================================
+def save_with_pose(image, filename, on_white=False):
+    results = extract_landmarks(image)
+    if results.pose_landmarks is None:
+        print(f"{filename}: Failed to detect pose")
+    annotated = draw_skeleton_on_white(image, results) if on_white else draw_skeleton(image, results)
+    cv2.imwrite(filename, annotated)
+    return results
+
+
+# =====================================
+# Get landmark pixel coordinate into dict type
+# =====================================
+def get_landmark_pixels(results, image_shape):
+    """{num: (x, y, visibility)}"""
+    if results.pose_landmarks is None:
+        return None
+    h, w = image_shape[:2]
+    coords = {}
+    for idx, lm in enumerate(results.pose_landmarks.landmark):
+        coords[idx] = (int(lm.x * w), int(lm.y * h), lm.visibility)
+    return coords

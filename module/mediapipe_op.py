@@ -80,6 +80,7 @@ video_options = vision.PoseLandmarkerOptions(
 )
 video_landmarker = vision.PoseLandmarker.create_from_options(video_options)
 
+
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 

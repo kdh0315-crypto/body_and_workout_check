@@ -7,7 +7,7 @@ class workout_sel():
 
     def load_workout(self, ollama_response: dict):
         """
-        ollama_response = {excercise : '', priority : '', reason : ''}
+        ollama_response = {excercise : '', priority : '', count : '', unit : '', sets : '', reason : ''}
         """
         recommend_workout = ollama_response['recommendations']
         self.workouts = sorted(recommend_workout, key=lambda x: x['priority'])

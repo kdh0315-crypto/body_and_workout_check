@@ -1,8 +1,9 @@
 import sys
 import cv2
 from PySide6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QPushButton
-from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import QThread, Signal, QTimer, Qt
+from PySide6.QtWidgets import QProgressBar, QTextEdit
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -11,8 +12,66 @@ from PySide6.QtWidgets import (
 
 from module.mediapipe_op import *      # CaptureForm, save_with_pose 등
 from module.workout_sel import *
+from module.cal_angle import *
+from module.ollama_op import *
 
 from gui.gui_style import *
+
+class LLMWorker(QThread):
+    """스트레칭 추천 + 운동 처방을 백그라운드에서 순서대로 실행."""
+    finished = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, metrics, user_info):
+        super().__init__()
+        self.metrics = metrics
+        self.user_info = user_info
+
+    def run(self):
+        abnormal = find_abnormal(self.metrics)
+
+        # 호출 1: 스트레칭 (표시 전용)
+        stretches = recommend_stretches(abnormal)
+
+        # 호출 2: 운동 처방 (workout_sel 형식)
+        goal = self.user_info.get("goal", "posture")
+        level = self.user_info.get("level", "beginner")
+        workout = prescribe_workouts(goal, level)
+
+        if not stretches and not workout.get("recommendations"):
+            self.failed.emit("추천을 생성하지 못했습니다. 다시 시도해주세요.")
+            return
+
+        self.finished.emit({
+            "stretches": stretches,
+            "workout": workout,
+        })
+
+class LoadingOverlay(QWidget):
+    """화면 위에 덮는 로딩 표시."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setStyleSheet("background-color: rgba(30, 30, 46, 200);")
+
+        layout = QVBoxLayout()
+        layout.setAlignment(Qt.AlignCenter)
+
+        self.label = QLabel("자세 분석 중...\n잠시만 기다려주세요")
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setStyleSheet("color: #cdd6f4; font-size: 18px; font-weight: bold;")
+        layout.addWidget(self.label)
+
+        # 진행 표시 바 (무한 로딩 애니메이션)
+        bar = QProgressBar()
+        bar.setRange(0, 0)          # 0,0이면 값 없는 무한 애니메이션
+        bar.setFixedWidth(200)
+        layout.addWidget(bar, alignment=Qt.AlignCenter)
+
+        self.setLayout(layout)
+
+    def resizeEvent(self, event):
+        # 부모 크기에 꽉 차게
+        self.resize(self.parent().size())
 
 class CameraView(QWidget):
     def __init__(self, user_info: dict):
@@ -33,6 +92,12 @@ class CameraView(QWidget):
         self.status_label = QLabel("정면 자세를 잡고 '촬영' 버튼을 누르세요")
         self.status_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.status_label)
+
+        self.result_view = QTextEdit()
+        self.result_view.setReadOnly(True)
+        self.result_view.setMinimumHeight(200)
+        self.result_view.hide()          # 결과 나오기 전엔 숨김
+        layout.addWidget(self.result_view)
 
         # 촬영 버튼 (키보드 c 대신 버튼으로)
         self.capture_btn = QPushButton("촬영")
@@ -93,42 +158,89 @@ class CameraView(QWidget):
             self.on_capture_done(front_img, side_img)
 
     def on_capture_done(self, front_img, side_img):
-        """촬영 완료 → 스켈레톤 저장 → 관절 좌표 추출."""
+        """촬영 완료 → 카메라 정지 → 각도 계산 → 로딩 표시 → LLM 백그라운드 실행."""
         print("촬영 완료. user_info:", self.user_info)
 
-        # 스켈레톤 그려 저장 + 랜드마크 결과 반환
+        # 카메라 루프 정지 + 화면 비우기 (로딩 중 영상 안 보이게)
+        self.timer.stop()
+        self.video_label.clear()
+
+        # 1) 스켈레톤 저장 + 랜드마크 추출
         front_results = save_with_pose(front_img, "front_pose.jpg")
         side_results  = save_with_pose(side_img,  "side_pose.jpg")
 
-        # 감지 실패 처리
-        if front_results.pose_landmarks is None or side_results.pose_landmarks is None:
-            fail = []
-            if front_results.pose_landmarks is None: fail.append("정면")
-            if side_results.pose_landmarks is None:  fail.append("측면")
-            self.status_label.setText(f"{', '.join(fail)} 감지 실패 — 다시 촬영")
+        if not has_landmarks(front_results) or not has_landmarks(side_results):
+            self.status_label.setText("포즈 감지 실패 — 다시 촬영")
             self._restart()
             return
 
-        # 관절 좌표 추출 (이름 기반)
-        front_points = get_pose_point_norm(front_results, front_img.shape)
-        side_points  = get_pose_point_norm(side_results, side_img.shape)
+        # 2) 각도 계산 → metrics 변환
+        fh, fw = front_img.shape[:2]
+        sh, sw = side_img.shape[:2]
+        front_features = calculate_all_features(front_results.pose_landmarks[0], fw, fh)
+        side_features  = calculate_all_features(side_results.pose_landmarks[0], sw, sh)
+        metrics = features_to_metrics(front_features, side_features)
+        print("metrics:", metrics)
 
-        # 확인용 콘솔 출력
-        print("\n=== 정면 좌표 ===")
-        for name, (x, y, vis) in front_points.items():
-            print(f"  {name:15s}: ({x:4d}, {y:4d})  vis={vis:.2f}")
+        # 3) 로딩 오버레이 표시
+        self.overlay = LoadingOverlay(self)
+        self.overlay.resize(self.size())
+        self.overlay.show()
 
-        print("\n=== 측면 좌표 ===")
-        for name, (x, y, vis) in side_points.items():
-            print(f"  {name:15s}: ({x:4d}, {y:4d})  vis={vis:.2f}")
+        # 4) LLM을 백그라운드 스레드에서 실행
+        self.worker = LLMWorker(metrics, self.user_info)   # user_info 추가
+        self.worker.finished.connect(self.on_llm_done)
+        self.worker.failed.connect(self.on_llm_failed)
+        self.worker.start()
 
-        # 다음 단계(각도 계산)에서 쓰도록 보관
-        self.front_points = front_points
-        self.side_points = side_points
+    def on_llm_done(self, data):
+        """LLM 성공 — 로딩 닫고 스트레칭 + 운동 결과 표시."""
+        self.overlay.hide()
+        self.video_label.hide()          # 카메라 자리 숨김
+        self.capture_btn.hide()          # 촬영 버튼 숨김
+        self.result_view.show()          # 결과 영역 표시
 
-        # 저장된 스켈레톤 이미지를 화면에 표시
-        self._show_result("front_pose.jpg")
-        self.status_label.setText("좌표 추출 완료 — 콘솔 확인")
+        stretches = data.get("stretches", [])
+        workout = data.get("workout", {"recommendations": []})
+        recs = workout.get("recommendations", [])
+
+        # --- 결과 텍스트 조립 ---
+        lines = []
+
+        lines.append("〈 추천 스트레칭 〉")
+        if stretches:
+            for s in stretches:
+                lines.append(f"· {s.get('name')} — {s.get('reason')}")
+        else:
+            lines.append("· (없음)")
+
+        lines.append("")
+        lines.append("〈 오늘의 운동 〉")
+        if recs:
+            for r in recs:
+                cnt = r.get("count")
+                unit = r.get("unit")
+                sets = r.get("sets")
+                lines.append(
+                    f"{r.get('priority')}. {r.get('exercise')} "
+                    f"— {cnt}{unit} × {sets}세트  ({r.get('reason')})"
+                )
+        else:
+            lines.append("· (없음)")
+
+        self.result_view.setText("\n".join(lines))
+
+        # 운동 선택기에 로드 (이후 운동 진행에 사용)
+        self.selector = workout_sel()
+        self.selector.load_workout(workout)
+        print("스트레칭:", stretches)
+        print("운동:", recs)
+
+    def on_llm_failed(self, message):
+        """LLM 실패 — 로딩 닫고 메시지 표시."""
+        self.overlay.hide()
+        self.status_label.setText(message)
+        print("LLM 실패:", message)
 
     def _show_result(self, image_path):
         """저장된 스켈레톤 이미지를 화면에 표시."""

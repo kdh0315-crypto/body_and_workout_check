@@ -7,8 +7,6 @@ from mediapipe.tasks.python import vision
 from mediapipe.framework.formats import landmark_pb2
 
 from module.basic_fn import *
-from module.upper_body import *
-from module.lower_body import *
 
 
 # =====================================
@@ -119,7 +117,7 @@ def extract_landmarks_video(image, timestamp_ms):
 
 
 # Check existance of landmark
-def _has_landmarks(results):
+def has_landmarks(results):
     return results.pose_landmarks is not None and len(results.pose_landmarks) > 0
 
 # =====================================
@@ -139,7 +137,7 @@ def _to_landmark_proto(results):
 # =====================================
 def draw_skeleton(image, results):
     annotated = image.copy()
-    if _has_landmarks(results):
+    if has_landmarks(results):
         mp_drawing.draw_landmarks(
             annotated,
             _to_landmark_proto(results),
@@ -155,7 +153,7 @@ def draw_skeleton(image, results):
 # =====================================
 def draw_skeleton_on_white(image, results):
     white = np.ones_like(image) * 255
-    if _has_landmarks(results):
+    if has_landmarks(results):
         mp_drawing.draw_landmarks(
             white,
             _to_landmark_proto(results),
@@ -171,7 +169,7 @@ def draw_skeleton_on_white(image, results):
 # =====================================
 def save_with_pose(image, filename, on_white=False):
     results = extract_landmarks(image)
-    if not _has_landmarks(results):
+    if not has_landmarks(results):
         print(f"{filename}: Failed to detect pose")
     annotated = draw_skeleton_on_white(image, results) if on_white else draw_skeleton(image, results)
     cv2.imwrite(filename, annotated)
@@ -183,7 +181,7 @@ def save_with_pose(image, filename, on_white=False):
 # =====================================
 def get_landmark_pixels(results, image_shape):
     """{landmark num: (x, y, visibility)}"""
-    if not _has_landmarks(results):
+    if not has_landmarks(results):
         return None
 
     h, w = image_shape[:2]
@@ -211,7 +209,7 @@ def get_pose_point(results, image_shape):
 # =====================================
 def get_pose_point_norm(results, with_vis=False):
     """정규화 좌표(0~1) 반환. with_vis=True면 [x, y, visibility]."""
-    if not _has_landmarks(results):
+    if not has_landmarks(results):
         return None
 
     lm_list = results.pose_landmarks[0]
@@ -223,12 +221,3 @@ def get_pose_point_norm(results, with_vis=False):
         else:
             points[name] = [lm.x, lm.y]
     return points
-
-# =====================================
-# Front body pose calculate
-# =====================================
-
-
-# =====================================
-# Side body pose calculate
-# =====================================

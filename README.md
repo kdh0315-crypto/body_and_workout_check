@@ -53,6 +53,7 @@ project/
 │
 ├── module/
 │   ├── basic_fn.py             # 공용 계산 유틸 (3점 각도, 픽셀 변환, 중간점)
+│   ├── cal_angle.py            # Mediapipe 출력 결과에서 각도를 계산하기 위한 함수 모음
 │   ├── mediapipe_op.py         # CaptureForm + MediaPipe Tasks 랜드마커·스켈레톤·좌표 추출
 │   ├── upper_body.py           # 상체 각도 추출: FHA, FSA, shoulder tilt, thoracic kyphosis
 │   ├── lower_body.py           # 하체 각도 추출: anterior pelvic tilt, knee valgus

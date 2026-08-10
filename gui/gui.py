@@ -93,42 +93,49 @@ class CameraView(QWidget):
             self.on_capture_done(front_img, side_img)
 
     def on_capture_done(self, front_img, side_img):
-        """촬영 완료 후 스켈레톤 추출 → 저장 → 화면 표시."""
+        """촬영 완료 → 스켈레톤 저장 → 관절 좌표 추출."""
         print("촬영 완료. user_info:", self.user_info)
 
-        # 정면/측면 각각 스켈레톤 그려 저장 + 랜드마크 결과 반환
+        # 스켈레톤 그려 저장 + 랜드마크 결과 반환
         front_results = save_with_pose(front_img, "front_pose.jpg")
         side_results  = save_with_pose(side_img,  "side_pose.jpg")
 
         # 감지 실패 처리
-        front_ok = front_results.pose_landmarks is not None
-        side_ok  = side_results.pose_landmarks is not None
-
-        if not front_ok or not side_ok:
+        if front_results.pose_landmarks is None or side_results.pose_landmarks is None:
             fail = []
-            if not front_ok: fail.append("정면")
-            if not side_ok:  fail.append("측면")
-            self.status_label.setText(
-                f"{', '.join(fail)} 포즈 감지 실패 — 다시 촬영해주세요"
-            )
+            if front_results.pose_landmarks is None: fail.append("정면")
+            if side_results.pose_landmarks is None:  fail.append("측면")
+            self.status_label.setText(f"{', '.join(fail)} 감지 실패 — 다시 촬영")
             self._restart()
             return
 
-        self.status_label.setText("스켈레톤 추출 완료")
+        # 관절 좌표 추출 (이름 기반)
+        front_points = get_pose_point_norm(front_results, front_img.shape)
+        side_points  = get_pose_point_norm(side_results, side_img.shape)
+
+        # 확인용 콘솔 출력
+        print("\n=== 정면 좌표 ===")
+        for name, (x, y, vis) in front_points.items():
+            print(f"  {name:15s}: ({x:4d}, {y:4d})  vis={vis:.2f}")
+
+        print("\n=== 측면 좌표 ===")
+        for name, (x, y, vis) in side_points.items():
+            print(f"  {name:15s}: ({x:4d}, {y:4d})  vis={vis:.2f}")
+
+        # 다음 단계(각도 계산)에서 쓰도록 보관
+        self.front_points = front_points
+        self.side_points = side_points
 
         # 저장된 스켈레톤 이미지를 화면에 표시
-        self._show_skeleton("front_pose.jpg", "side_pose.jpg")
+        self._show_result("front_pose.jpg")
+        self.status_label.setText("좌표 추출 완료 — 콘솔 확인")
 
-        # 이후 각도 계산 → find_abnormal → ask_ollama 로 이어감
-        # (다음 단계에서 front_results / side_results 를 사용)
-        self.front_results = front_results
-        self.side_results = side_results
-
-    def _show_skeleton(self, front_path, side_path):
-        """저장된 정면/측면 스켈레톤 이미지를 나란히 표시."""
-        # 정면 이미지를 video_label 자리에 표시
-        front = cv2.imread(front_path)
-        rgb = cv2.cvtColor(front, cv2.COLOR_BGR2RGB)
+    def _show_result(self, image_path):
+        """저장된 스켈레톤 이미지를 화면에 표시."""
+        img = cv2.imread(image_path)
+        if img is None:
+            return
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
         self.video_label.setPixmap(
@@ -136,15 +143,14 @@ class CameraView(QWidget):
                 self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
         )
-        # 촬영 버튼은 더 이상 필요 없으니 비활성화
-        self.capture_btn.setEnabled(False)
+        self.capture_btn.setEnabled(False)   # 촬영 끝났으니 버튼 비활성화
 
     def _restart(self):
-        """감지 실패 시 촬영을 처음부터 다시."""
-        self.cap_form = CaptureForm()          # 촬영 상태 초기화
+        """감지 실패 시 촬영 처음부터."""
+        self.cap_form = CaptureForm()
         self.status_label.setText("정면 자세를 잡고 '촬영'을 누르세요")
         if not self.timer.isActive():
-            self.timer.start(30)               # 카메라 루프 재시작
+            self.timer.start(30)
 
     def closeEvent(self, event):
         """창이 닫힐 때 카메라 해제."""

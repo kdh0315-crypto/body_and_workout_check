@@ -205,6 +205,21 @@ class CameraView(QWidget):
         recs = workout.get("recommendations", [])
 
         # --- 결과 텍스트 조립 ---
+        self._concatenate_text(stretches, recs)
+
+        # 운동 선택기에 로드 (이후 운동 진행에 사용)
+        self.selector = workout_sel()
+        self.selector.load_workout(workout)
+        print("스트레칭:", stretches)
+        print("운동:", recs)
+
+    def on_llm_failed(self, message):
+        """LLM 실패 — 로딩 닫고 메시지 표시."""
+        self.overlay.hide()
+        self.status_label.setText(message)
+        print("LLM 실패:", message)
+
+    def _concatenate_text(self, stretches, recs):
         lines = []
 
         lines.append("〈 추천 스트레칭 〉")
@@ -230,17 +245,6 @@ class CameraView(QWidget):
 
         self.result_view.setText("\n".join(lines))
 
-        # 운동 선택기에 로드 (이후 운동 진행에 사용)
-        self.selector = workout_sel()
-        self.selector.load_workout(workout)
-        print("스트레칭:", stretches)
-        print("운동:", recs)
-
-    def on_llm_failed(self, message):
-        """LLM 실패 — 로딩 닫고 메시지 표시."""
-        self.overlay.hide()
-        self.status_label.setText(message)
-        print("LLM 실패:", message)
 
     def _show_result(self, image_path):
         """저장된 스켈레톤 이미지를 화면에 표시."""

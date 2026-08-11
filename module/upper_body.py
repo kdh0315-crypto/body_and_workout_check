@@ -4,44 +4,43 @@ import math
 # ========================================================
 # +. FHA
 # ========================================================
-def calculate_fha(neck_center, head, width, height):
-    neck_x = neck_center[0] * width
-    neck_y = neck_center[1] * height
+def calculate_fha(ear, shoulder, width=None, height=None):
+    """EAR-SHOULDER proxy angle used by the trained FHA model/rule table."""
+    ear_x = float(ear[0])
+    ear_y = float(ear[1])
+    shoulder_x = float(shoulder[0])
+    shoulder_y = float(shoulder[1])
 
-    head_x = head[0] * width
-    head_y = head[1] * height
+    # If normalized coordinates are supplied, scale to pixels to avoid
+    # aspect-ratio distortion. Pixel coordinates also work as-is.
+    if width is not None and height is not None:
+        ear_x *= width
+        ear_y *= height
+        shoulder_x *= width
+        shoulder_y *= height
 
-    dx = abs(head_x - neck_x)
-    dy = neck_y - head_y
+    dx = abs(ear_x - shoulder_x)
+    dy = abs(ear_y - shoulder_y)
 
-    if dx < 1e-6 and abs(dy) < 1e-6:
+    if dx < 1e-6 and dy < 1e-6:
         return None
 
-    if dy <= 0:
-        return None
-
-    return float(math.degrees(math.atan2(dy, dx)))
+    return float(math.degrees(math.atan2(dx, dy)))
 
 
 def classify_fha(fha_deg):
     if fha_deg is None:
         return "measurement_failed"
-        
 
-    if 50.0 <= fha_deg <= 60.0:
-        return "normal"
+    if fha_deg < 32.0:
+        return "RULE_NORMAL"
 
-    if 45.0 <= fha_deg < 50.0:
-        return "mild"
+    if fha_deg < 36.0:
+        return "RULE_BORDERLINE"
 
-    if 40.0 <= fha_deg < 45.0:
-        return "moderate"
+    return "RULE_ABNORMAL"
 
-    if fha_deg < 40.0:
-        return "severe"
 
-    # 60도를 초과한 경우
-    return "out_of_range"
 # ========================================================
 # +.FSA 
 # ========================================================

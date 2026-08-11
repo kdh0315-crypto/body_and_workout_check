@@ -1,163 +1,240 @@
-# 자세 분석 및 운동 추천 시스템
+# Body and Workout Check — Integration Status
 
-MediaPipe Pose 기반으로 정면/측면 촬영 이미지에서 자세를 분석하고, 자세 편차를 검출한 뒤 교정 운동을 추천하는 시스템. NVIDIA Jetson Orin Nano 배포를 목표로 개발
+> 2026-08-11 기준 통합본  
+> Branch: `integration_input_mediapipe`
 
-## 개요
+## 1. 현재 목표
 
-- **입력**: 웹캠으로 정면 / 측면 자세 2장 순차 촬영
-- **분석**: MediaPipe Pose 랜드마크 추출 → 자세 지표(각도) 계산 → 임계값 비교로 편차 검출
-- **추천**: 사전 필터링된 이상 항목만 로컬 LLM(Ollama, gemma3:4b)에 전달 → 운동 매칭·우선순위·설명 생성
-- **운동 진행**: FSM 기반 `workout_sel`이 우선순위 순으로 운동을 순차 배출
+정면/측면 이미지를 입력받아 MediaPipe 기반 Body Check를 수행하고,
+FHA는 Rule + TensorRT AI + Fusion으로 최종 판정한 뒤,
+전체 자세 결과를 `find_abnormal()` → Ollama로 전달하여
+스트레칭/운동 추천을 생성한다.
 
-### 하이브리드 아키텍처
-
-객관적 각도 임계값 비교·편차 검출은 **Python 코드**(`find_abnormal`)가 담당하고, 운동 매칭·우선순위·설명 생성은 **로컬 Ollama**가 담당한다. LLM에 원시(raw) 각도 값을 직접 해석시키면 성능이 나빠져, 역할을 명확히 분리했다.
-
-```
-사용자 정보 입력 (UserInfoForm)
+```text
+Front / Side Image
+        ↓
+MediaPipe Pose
+        ↓
+calculate_all_features()
+        ↓
+Body Check Metrics
         │
-        ▼
-카메라 촬영 (CameraView + CaptureForm) ── 정면 → 측면 순차 캡처
-        │
-        ▼
-MediaPipe 랜드마크 추출 (save_with_pose / extract_landmarks)
-        │
-        ▼
-관절 좌표 추출 (get_pose_point_norm)
-        │
-        ▼
-각도 지표 계산 (upper_body / lower_body)
-   FHA · FSA · shoulder tilt · thoracic kyphosis · pelvic tilt · knee valgus
-        │
-        ▼
-find_abnormal() — REF_RANGES 대비 편차 계산·심각도 정렬
-        │
-        ▼ (이상 항목만 전달)
-Ollama (gemma3:4b) — 운동 매칭·우선순위·설명 (JSON)
-        │
-        ▼
-workout_sel — 우선순위 순 운동 진행 (idle → work → idle)
+        ├─ Shoulder Tilt
+        ├─ Knee Valgus
+        ├─ FHA (Rule + TensorRT AI + Fusion)
+        ├─ FSA
+        ├─ Thoracic Kyphosis
+        └─ Pelvic Tilt
+        ↓
+features_to_metrics()
+        ↓
+find_abnormal()
+        ↓
+LLMWorker
+        ↓
+Ollama
+        ↓
+Stretch / Workout Recommendation
 ```
 
-## 파일 구조
+## 2. 현재 주요 파일
 
-```
-project/
-├── main.py                     # 진입점: QApplication 실행, UserInfoForm 표시
-├── README.md
-├── .gitignore
-│
+```text
+body_and_workout_check/
 ├── gui/
-│   ├── gui.py                  # UserInfoForm(정보 입력) + CameraView(촬영·분석)
-│   └── gui_style.py            # STYLE: 다크 테마 QSS 문자열
-│
+│   └── gui.py
 ├── module/
-│   ├── basic_fn.py             # 공용 계산 유틸 (3점 각도, 픽셀 변환, 중간점)
-│   ├── cal_angle.py            # Mediapipe 출력 결과에서 각도를 계산하기 위한 함수 모음
-│   ├── mediapipe_op.py         # CaptureForm + MediaPipe Tasks 랜드마커·스켈레톤·좌표 추출
-│   ├── upper_body.py           # 상체 각도 추출: FHA, FSA, shoulder tilt, thoracic kyphosis
-│   ├── lower_body.py           # 하체 각도 추출: anterior pelvic tilt, knee valgus
-│   ├── ollama_op.py            # REF_RANGES, find_abnormal, 프롬프트, Ollama 호출
-│   ├── workout_sel.py          # workout_sel FSM - 추천된 운동 순차적으로 실행
-│   ├── test_fn.py              # Test & Debug용 함수 모음
-│   └── models/
-│       └── pose_landmarker_full.task   # MediaPipe Pose Landmarker 모델
-│
-└── docs/
-    └── Effect_of_Rounded_and_Hunched_Shoulder_Postures...pdf  # RSA/HSA 참고 논문
+│   ├── cal_angle.py
+│   ├── upper_body.py
+│   ├── lower_body.py
+│   ├── fha_integration.py
+│   └── ollama_op.py
+└── body_static_pose/
+    ├── fha_ai.py
+    └── runtime_models/
+        └── fha_mobilenet.engine
 ```
 
-> 참고: `main.py`는 `from module.* import *` 와 `from gui.gui import *` 형태로 import하므로,
-> `gui/`·`module/`은 패키지로 인식되도록 실행 위치(루트)에서 실행해야 한다.
-> MediaPipe 모델 경로는 `mediapipe_op.py`에 `module/models/pose_landmarker_full.task`로 하드코딩되어 있다.
+## 3. FHA 통합 구조
 
-## 자세 지표
+현재 FHA는 오른쪽 측면 기준으로 고정한다.
 
-| 지표 | 함수 | 정상 판정 | 파일 |
-|------|------|-----------|------|
-| FHA (forward head) | `calculate_fha` / `classify_fha` | 50~60° normal, 이하 mild/moderate/severe | upper_body.py |
-| FSA (forward shoulder) | `calculate_fsa` / `classify_fsa` | < 52° normal (Thigpen 기준) | upper_body.py |
-| Shoulder tilt | `calculate_shoulder_tilt` / `classify_shoulder_tilt` | \|각도\| ≤ 2.5° normal | upper_body.py |
-| Thoracic kyphosis | `calculate_thoracic_kyphosis` / `classify_thoracic_kyphosis` | 20~40° normal | upper_body.py |
-| Anterior pelvic tilt | `calculate_pelvic_tilt_ant` / `classify_pelvic_tilt_ant` | 8~18° normal | lower_body.py |
-| Knee valgus (FPPA) | `calculate_knee_valgus_angle` | (분류기 미정, 임계값 캘리브레이션 필요) | lower_body.py |
+```text
+RIGHT_EAR + RIGHT_SHOULDER
+```
 
-- 각도 계산은 정규화 좌표를 픽셀로 변환한 뒤 2D `(x, y)` 평면에서 수행 (z축 미사용)
-- `lower_body.py`의 벡터 각도(`calculate_vector_angle`)는 `np.clip(..., -1.0, 1.0)`으로 `arccos` 도메인 오류 방지
+Rule 기준:
 
-## 주요 컴포넌트
+```text
+< 32°          → RULE_NORMAL
+32° ~ < 36°    → RULE_BORDERLINE
+>= 36°         → RULE_ABNORMAL
+```
 
-### GUI (`gui/gui.py`)
-- **UserInfoForm**: 나이 / 체력 수준(초급·중급·고급) / 목표(자세교정·근력·지구력) 입력 → `{age, level, goal}` dict 생성 후 CameraView로 전환
-- **CameraView**: `QTimer`(30ms ≈ 33fps) 카메라 루프, OpenCV(BGR) → `QImage`/`QPixmap`(RGB) 변환. '촬영' 버튼(`on_capture`)으로 CaptureForm에 프레임 전달
-  - 촬영 완료 시 `save_with_pose`로 스켈레톤 저장 + `get_pose_point_norm`으로 정면/측면 관절 좌표 추출 (현재는 콘솔 출력까지)
-  - 감지 실패 시 `_restart()`로 재촬영
-- **다크 테마**: `gui_style.py`의 `STYLE` 문자열을 `main.py`에서 `app.setStyleSheet(STYLE)`로 전역 적용
+AI 기준:
 
-### CaptureForm (`module/mediapipe_op.py`)
-- 정면 → 측면 순서로 순차 캡처
-- `key == ord('c')` + `key_released` 플래그로 정면/측면 동시 촬영 방지(디바운싱)
-- GUI 버튼 방식에서는 `key_released = True`를 세팅한 뒤 `capture_form(ord('c'), frame)` 호출
-- 측면까지 완료되면 `(front_img, side_img)` 반환하고 `done = True`
+```text
+score < 0.55            → AI_NORMAL
+0.55 <= score < 0.75    → AI_BORDERLINE
+score >= 0.75           → AI_ABNORMAL
+```
 
-### MediaPipe (`module/mediapipe_op.py`)
-- **Tasks API** 사용 (`vision.PoseLandmarker`, `pose_landmarker_full.task`), IMAGE / VIDEO 러닝 모드 둘 다 초기화
-- 스켈레톤 드로잉은 legacy `mp.solutions.drawing_utils` + `POSE_CONNECTIONS` 사용 (Tasks 결과를 `NormalizedLandmarkList` proto로 변환)
-- `KEY_LANDMARKS`로 코·귀·어깨·엉덩이·무릎·발목만 이름 기반 추출
-- 좌표 추출: `get_landmark_pixels`(픽셀), `get_pose_point`(이름별 픽셀), `get_pose_point_norm`(이름별 정규화, `with_vis` 옵션)
+Fusion 기준:
 
-### 이상 검출 & 추천 (`module/ollama_op.py`)
-- **REF_RANGES**: 지표별 `(label, normal_min, normal_max, direction)`. direction은 `abs`/`high`/`low`
-- **find_abnormal**: 정상 범위 밖 항목만 추려 편차 크기 내림차순 정렬
-- **build_prompt**: 영어 지시 프롬프트. 이상 항목만 나열, 상위 2개만 추천, 각 이유는 짧게, JSON만 출력 요구
-- **ask_ollama**: `model="gemma3:4b"`, `format="json"`, `temperature=0`, `num_ctx=2048`, `keep_alive="0"`
-- **recommend_exercise**: 판정 → 프롬프트 → 호출 → JSON 파싱 → 우선순위 정렬 출력
-- 현재 `AVAILABLE_EXERCISES = "squat, plank, biceps curl"`
+```text
+RULE_ABNORMAL → FUSION_ABNORMAL
+AI_ABNORMAL   → FUSION_ABNORMAL
+RULE_NORMAL + AI_NORMAL → FUSION_NORMAL
+그 외 → FUSION_BORDERLINE
+```
 
-### workout_sel (`module/workout_sel.py`)
-- 상태: `idle` / `work`
-- `load_workout(ollama_response)`: `recommendations`를 priority 순 정렬, 있으면 `work`로 전이
-- `current_workout()`: 현재 운동 반환(없으면 None)
-- `next_workout(work_done)`: `work_done=True`일 때만 `work_cnt` 증가, 모두 끝나면 `idle` 복귀
-- 테스트: `module/test_fn.py`의 `test_workout_sel`, `test_edge_cases`
+## 4. FSA
 
-## 개발 환경
+FHA와 측면 기준을 맞추기 위해 오른쪽 어깨를 사용한다.
 
-- **하드웨어**: NVIDIA Jetson Orin Nano (aarch64) 배포 / x86_64 PC 개발
-- **핵심 라이브러리**: MediaPipe, OpenCV, NumPy, PySide6, ollama (공식 파이썬 라이브러리)
-- **LLM**: 로컬 Ollama + gemma3:4b
+```text
+NECK_CENTER + RIGHT_SHOULDER
+```
 
-## 실행
+FSA 기준은 52°로 통일했다.
+
+```text
+FSA < 52°  → normal
+FSA >= 52° → abnormal
+```
+
+`module/upper_body.py`와 `module/ollama_op.py`의 기준을 일치시켰다.
+
+## 5. Pelvic Tilt
+
+`calculate_all_features()`의 계산 key:
+
+```text
+pelvic_tilt_ant_deg
+```
+
+최종 metrics key:
+
+```text
+pelvic_tilt_ant
+```
+
+`features_to_metrics()`에 아래 mapping을 추가했다.
+
+```python
+"pelvic_tilt_ant": side_features.get("pelvic_tilt_ant_deg"),
+```
+
+실제 테스트에서 `side_features`의 Pelvic 값이 `metrics`까지 전달되는 것을 확인했다.
+
+## 6. 최종 Metrics 구조
+
+```python
+metrics = {
+    "shoulder_tilt": ...,
+    "knee_valgus": ...,
+    "forward_head": ...,
+    "round_shoulder": ...,
+    "thoracic_kyphosis": ...,
+    "pelvic_tilt_ant": ...,
+    "forward_head_fusion": ...,
+}
+```
+
+측정 실패로 `None`인 값은 최종 metrics에서 제외한다.
+
+## 7. 실제 검증 완료
+
+- [x] 사용자 정보 입력
+- [x] Front Image Capture
+- [x] Side Image Capture
+- [x] MediaPipe landmark 생성
+- [x] `front_features` 생성
+- [x] `side_features` 생성
+- [x] FHA angle 계산
+- [x] FHA Rule 판정
+- [x] TensorRT FHA AI 추론
+- [x] FHA AI score/result
+- [x] FHA Fusion
+- [x] FHA Fusion → metrics
+- [x] Shoulder Tilt 계산 및 metrics 전달
+- [x] Left Knee Alignment 계산
+- [x] Right Knee Alignment 계산
+- [x] Left Knee Valgus 계산
+- [x] Right Knee Valgus 계산
+- [x] Knee Valgus 평균 → metrics
+- [x] Thoracic Kyphosis 계산 및 metrics 전달
+- [x] FSA 실제 숫자 출력
+- [x] FSA → `round_shoulder` 전달
+- [x] Pelvic Tilt → `pelvic_tilt_ant` 연결
+- [x] Pelvic Tilt 실제 숫자 → metrics 전달 확인
+- [x] `find_abnormal()` 실행
+- [x] Ollama 호출
+- [x] Stretch 추천 반환
+- [x] Workout 추천 반환
+
+## 8. 실제 검증 예
+
+```text
+FHA Rule: 15.8269 / RULE_NORMAL
+FHA AI: 0.3945 / AI_NORMAL
+FHA Fusion: FUSION_NORMAL
+```
+
+FSA:
+
+```text
+side_features:
+'fsa_deg': 80.98559415013713
+```
+
+Pelvic Tilt:
+
+```text
+side_features:
+'pelvic_tilt_ant_deg': 5.970216756103923
+```
+
+```text
+metrics:
+'pelvic_tilt_ant': 5.970216756103923
+```
+
+## 9. 현재 남은 작업
+
+- [ ] FSA와 Pelvic Tilt가 동시에 숫자로 나오는 측면 이미지로 최종 1회 재확인
+- [ ] 전체 수정 파일 `py_compile`
+- [ ] `git diff` 최종 확인
+- [ ] 테스트용 `front_features`, `side_features` print 유지/제거 결정
+- [ ] 팀 공유용 commit
+- [ ] merge 전 충돌 확인
+
+## 10. 추후 개선사항
+
+현재 통합 범위에서는 제외한다.
+
+- [ ] 측면 LEFT / RIGHT 자동 판별
+- [ ] landmark visibility 비교
+- [ ] 더 신뢰도 높은 EAR / SHOULDER 자동 선택
+- [ ] FHA / FSA 측면 방향 자동 통일
+- [ ] 반대 방향 촬영 fallback
+- [ ] landmark visibility 부족 시 재촬영 안내
+- [ ] TensorRT engine device compatibility 관리
+
+## 11. Git 공유 시 주의
+
+작업 디렉터리에는 모델, ZIP, 테스트 이미지, dataset 등이 있으므로
+`git add .` 사용을 피하고 필요한 파일만 명시적으로 stage한다.
 
 ```bash
-# 프로젝트 루트에서
-python main.py
+git add \
+gui/gui.py \
+module/fha_integration.py \
+module/cal_angle.py \
+module/upper_body.py \
+module/ollama_op.py \
+README.md
 ```
 
-1. 정보 입력 폼에서 나이·체력 수준·목표 선택 후 제출
-2. 카메라 화면에서 정면 자세 → '촬영', 측면 자세 → '촬영'
-3. 스켈레톤 저장 및 관절 좌표 추출 (콘솔 확인)
-
-## 진행 상황
-
-**완료**
-- 자세 지표 계산 함수 (FHA/FSA/shoulder tilt/kyphosis/pelvic tilt/knee valgus)
-- `REF_RANGES` / `find_abnormal` / Ollama 프롬프트·호출
-- `workout_sel` FSM (+ 단위 테스트)
-- CaptureForm (디바운싱) + MediaPipe Tasks 파이프라인
-- PySide6 다크 테마 GUI (정보 입력 → 촬영 → 좌표 추출)
-
-**진행 예정**
-- 추출된 관절 좌표를 각도 계산 함수에 연결 → `metrics` dict 구성 → `recommend_exercise` 호출까지 파이프라인 결선 (현재 좌표 추출 후 콘솔 출력에서 끊김)
-- REF_RANGES 지표 키와 실제 계산 함수 출력 이름 정합 (예: `forward_head`↔FHA, `round_shoulder`↔FSA 매핑)
-- `AVAILABLE_EXERCISES`를 실제 목표 운동(W/Y raise, 승모근 스트레칭 등)으로 확장
-- Knee valgus 임계값 캘리브레이션 (MediaPipe 무릎 각도 오차, 정상군 데이터 기반 보정 필요)
-- XGBoost 분류기를 Layer 2 오류 분류 모델로 도입 검토
-
-## 설계 원칙 / 학습
-
-- **z축 미사용**: MediaPipe z 추정 정확도가 낮아 카메라 평면별 2D `(x, y)`만 사용
-- **`np.clip` 필수**: dot product 각도 계산 시 `arccos` 부동소수점 도메인 오류 방지
-- **LLM 역할 제한**: 잘못된 추천을 막기 위해 사전 필터링된 이상 항목만 전달, 정상 항목은 언급 금지
-- **Shoulder tilt / pelvic tilt**: 좌우 자연 비대칭·랜드마크 추정 한계로 임계값이 민감함 (참고용 성격이 강함)
-- **참고 논문**: RSA/HSA 정상군 값을 지표 정상 범위 산정에 활용
+`main.py`는 기존 474줄 구현이 GUI entry point로 교체된 상태이므로,
+팀 공유 전에 별도 검토 후 포함 여부를 결정한다.

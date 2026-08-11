@@ -136,15 +136,15 @@ def calculate_all_features(landmarks, width, height, vis_th=0.5):
 
         # ===== 측면 지표 =====
         "fha_deg": safe(
-            ok("left_shoulder", "right_shoulder", "left_ear", "right_ear"),
+            ok("right_ear", "right_shoulder"),
             lambda: calculate_fha(
-                points["NECK_CENTER"], points["HEAD"], width, height),
+                points["right_ear"], points["right_shoulder"]),
         ),
-        "fsa_deg": safe(
-            ok("left_shoulder", "right_shoulder"),
-            lambda: calculate_fsa(
-                points["NECK_CENTER"], points["left_shoulder"], width, height),
-        ),
+       "fsa_deg": safe(
+    ok("right_shoulder"),
+    lambda: calculate_fsa(
+        points["NECK_CENTER"], points["right_shoulder"], width, height),
+),
         "thoracic_kyphosis_deg": safe(
             ok("left_ear", "right_ear", "left_shoulder", "left_hip"),
             lambda: calculate_thoracic_kyphosis(
@@ -204,14 +204,15 @@ def features_to_metrics(front_features, side_features):
         knee = lk if lk is not None else rk
 
     metrics = {
-        # 정면 지표
-        "shoulder_tilt":     front_features.get("shoulder_tilt_deg"),
-        "knee_valgus":       knee,
-        # 측면 지표
-        "forward_head":      side_features.get("fha_deg"),
-        "round_shoulder":    side_features.get("fsa_deg"),
-        "thoracic_kyphosis": side_features.get("thoracic_kyphosis_deg"),
-    }
+    # 정면 지표
+    "shoulder_tilt":     front_features.get("shoulder_tilt_deg"),
+    "knee_valgus":       knee,
 
+    # 측면 지표
+    "forward_head":      side_features.get("fha_deg"),
+    "round_shoulder":    side_features.get("fsa_deg"),
+    "thoracic_kyphosis": side_features.get("thoracic_kyphosis_deg"),
+    "pelvic_tilt_ant":   side_features.get("pelvic_tilt_ant_deg"),
+}
     # None 값은 제외 (find_abnormal이 판정 못 하므로)
     return {k: v for k, v in metrics.items() if v is not None}

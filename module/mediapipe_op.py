@@ -8,6 +8,9 @@ from mediapipe.framework.formats import landmark_pb2
 
 from module.basic_fn import *
 
+def get_landmark_xy(landmarks, landmark_enum, image_width, image_height):
+    lm = landmarks[landmark_enum.value]
+    return [lm.x * image_width, lm.y * image_height], lm.visibility
 
 # =====================================
 # Capture Image to check body form

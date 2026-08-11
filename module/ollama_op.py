@@ -11,10 +11,10 @@ REF_RANGES = {
 }
 
 # 운동 3종 + 안전 범위 (횟수는 코드에서 이 범위로 clamp)
-EXERCISE_RANGES = {
-    "squat":       {"unit": "reps",    "count": (8, 20),  "sets": (2, 4)},
-    "plank":       {"unit": "seconds", "count": (15, 60), "sets": (2, 3)},
-    "biceps curl": {"unit": "reps",    "count": (8, 15),  "sets": (2, 4)},
+EXERCISE_POOL = {
+    "squat":       {"unit": "reps",    "count": (8, 20),  "sets": (2, 4), "rest": (20, 90)},
+    "plank":       {"unit": "seconds", "count": (15, 60), "sets": (2, 3), "rest": (30, 120)},
+    "biceps_curl": {"unit": "reps",    "count": (8, 15),  "sets": (2, 4), "rest": (20, 90)},
 }
 
 
@@ -89,10 +89,12 @@ GOAL_DESC = {
 
 def build_workout_prompt(goal: str, level: str) -> str:
     goal_text = GOAL_DESC.get(goal, "general fitness")
+    # 범위 안내에 rest 추가
     ranges_text = "\n".join(
         f"- {name}: {r['count'][0]}-{r['count'][1]} {r['unit']}, "
-        f"{r['sets'][0]}-{r['sets'][1]} sets"
-        for name, r in EXERCISE_RANGES.items()
+        f"{r['sets'][0]}-{r['sets'][1]} sets, "
+        f"rest {r['rest'][0]}-{r['rest'][1]} seconds between sets"
+        for name, r in EXERCISE_POOL.items()
     )
 
     return f"""You are an exercise coach.
@@ -107,15 +109,16 @@ Instructions:
 - For each exercise, assign count and sets WITHIN its safe range, matched to the user's goal.
 - Set "priority" as the order to perform (1 = first), ordering them to fit the goal.
 - Use the unit shown above for each exercise.
+- Assign rest_seconds between sets WITHIN the safe range (shorter for endurance, longer for strength).
 - Give a one-sentence reason IN KOREAN (short).
 - Do NOT give medical diagnoses.
 
 Respond ONLY in this JSON format:
 {{
   "recommendations": [
-    {{"exercise": "squat", "priority": 1, "count": 12, "unit": "reps", "sets": 3, "reason": "짧은 한국어 설명"}},
-    {{"exercise": "plank", "priority": 2, "count": 30, "unit": "seconds", "sets": 3, "reason": "짧은 한국어 설명"}},
-    {{"exercise": "biceps curl", "priority": 3, "count": 12, "unit": "reps", "sets": 3, "reason": "짧은 한국어 설명"}}
+    {{"exercise": "squat", "priority": 1, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 45, "reason": "..."}},
+    {{"exercise": "plank", "priority": 2, "count": 30, "unit": "seconds", "sets": 3, "rest_seconds": 30, "reason": "..."}},
+    {{"exercise": "biceps curl", "priority": 3, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 60, "reason": "..."}}
   ]
 }}"""
 
@@ -140,12 +143,13 @@ def prescribe_workouts(goal: str, level: str) -> dict:
     cleaned = []
     for rec in data.get("recommendations", []):
         ex = rec.get("exercise")
-        if ex not in EXERCISE_RANGES:      # 목록 밖 운동은 버림
+        if ex not in EXERCISE_POOL:      # 목록 밖 운동은 버림
             continue
-        r = EXERCISE_RANGES[ex]
+        r = EXERCISE_POOL[ex]
         rec["count"] = _clamp(rec.get("count", r["count"][0]), *r["count"])
         rec["sets"]  = _clamp(rec.get("sets",  r["sets"][0]),  *r["sets"])
-        rec["unit"]  = r["unit"]           # 단위는 코드가 강제 (LLM 실수 방지)
+        rec["rest_seconds"] = _clamp(rec.get("rest_seconds", r["rest"][0]), *r["rest"])  # 추가
+        rec["unit"]  = r["unit"]
         cleaned.append(rec)
 
     # priority 순 정렬해서 반환

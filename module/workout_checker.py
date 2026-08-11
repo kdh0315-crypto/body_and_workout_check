@@ -16,9 +16,9 @@ import time
 import numpy as np
 
 # ===== TRT 미사용 — 규칙 기반으로만 동작 =====
-# import tensorrt as trt
-# import pycuda.driver as cuda
-# import pycuda.autoinit  # noqa: F401
+import tensorrt as trt
+import pycuda.driver as cuda
+import pycuda.autoinit  # noqa: F401
 
 # ===== 동현님 프로젝트 함수 재사용 =====
 # mp_pose        : PoseLandmark enum 접근용
@@ -31,38 +31,38 @@ from module.mediapipe_op import mp_pose, get_landmark_xy
 # .trt 엔진이 준비되면 아래 주석을 풀고, 각 Checker의
 # _check_*_form 에서 규칙 기반 대신 모델 추론을 쓰면 된다.
 # =========================================================
-# TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
-#
-# class TRTModel:
-#     def __init__(self, engine_path):
-#         with open(engine_path, "rb") as f, trt.Runtime(TRT_LOGGER) as runtime:
-#             self.engine = runtime.deserialize_cuda_engine(f.read())
-#         self.context = self.engine.create_execution_context()
-#         self.input_name = self.engine.get_tensor_name(0)
-#         self.output_name = self.engine.get_tensor_name(1)
-#         input_shape = self.engine.get_tensor_shape(self.input_name)
-#         output_shape = self.engine.get_tensor_shape(self.output_name)
-#         self.input_size = int(np.prod(input_shape))
-#         self.output_size = int(np.prod(output_shape))
-#         self.d_input = cuda.mem_alloc(self.input_size * np.float32().itemsize)
-#         self.d_output = cuda.mem_alloc(self.output_size * np.float32().itemsize)
-#         self.stream = cuda.Stream()
-#
-#     def predict(self, input_array):
-#         input_array = np.ascontiguousarray(input_array, dtype=np.float32)
-#         output_array = np.empty(self.output_size, dtype=np.float32)
-#         cuda.memcpy_htod_async(self.d_input, input_array, self.stream)
-#         self.context.set_tensor_address(self.input_name, int(self.d_input))
-#         self.context.set_tensor_address(self.output_name, int(self.d_output))
-#         self.context.execute_async_v3(stream_handle=self.stream.handle)
-#         cuda.memcpy_dtoh_async(output_array, self.d_output, self.stream)
-#         self.stream.synchronize()
-#         return output_array
-#
-# ===== 학습된 TRT 엔진 로드 (미사용) =====
-# bicep_curl_model = TRTModel("bicep_curl_classifier.trt")
-# plank_model      = TRTModel("plank_classifier.trt")
-# squat_model      = TRTModel("squat_classifier.trt")   # 스쿼트는 규칙 기반이라 원래 미사용
+TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+
+class TRTModel:
+    def __init__(self, engine_path):
+        with open(engine_path, "rb") as f, trt.Runtime(TRT_LOGGER) as runtime:
+            self.engine = runtime.deserialize_cuda_engine(f.read())
+        self.context = self.engine.create_execution_context()
+        self.input_name = self.engine.get_tensor_name(0)
+        self.output_name = self.engine.get_tensor_name(1)
+        input_shape = self.engine.get_tensor_shape(self.input_name)
+        output_shape = self.engine.get_tensor_shape(self.output_name)
+        self.input_size = int(np.prod(input_shape))
+        self.output_size = int(np.prod(output_shape))
+        self.d_input = cuda.mem_alloc(self.input_size * np.float32().itemsize)
+        self.d_output = cuda.mem_alloc(self.output_size * np.float32().itemsize)
+        self.stream = cuda.Stream()
+
+    def predict(self, input_array):
+        input_array = np.ascontiguousarray(input_array, dtype=np.float32)
+        output_array = np.empty(self.output_size, dtype=np.float32)
+        cuda.memcpy_htod_async(self.d_input, input_array, self.stream)
+        self.context.set_tensor_address(self.input_name, int(self.d_input))
+        self.context.set_tensor_address(self.output_name, int(self.d_output))
+        self.context.execute_async_v3(stream_handle=self.stream.handle)
+        cuda.memcpy_dtoh_async(output_array, self.d_output, self.stream)
+        self.stream.synchronize()
+        return output_array
+
+# ===== 학습된 TRT 엔진 로드 =====
+bicep_curl_model = TRTModel("module/models/bicep_curl_classifier.trt")
+plank_model      = TRTModel("module/models/plank_classifier.trt")
+squat_model      = TRTModel("module/models/squat_classifier.trt")
 
 
 # =========================================================
@@ -203,23 +203,30 @@ class ExerciseSession:
             return 0.0
         return max(0.0, self.rest_seconds - (time.time() - self.rest_start))
 
-# =========================================================
-# 스쿼트 판별 (측면 전용, 순수 규칙 기반 — 변경 없음)
-# =========================================================
+# -----------------------------
+# 스쿼트 판별 로직 (SquatChecker)
+# 측면 전용 규칙 기반 판별 (기존 로직 그대로 유지)
+# -----------------------------
 class SquatChecker:
     name = "squat"
 
-    STATE_STANDING = "STANDING"
+    STATE_STANDING   = "STANDING"
     STATE_DESCENDING = "DESCENDING"
-    STATE_BOTTOM = "BOTTOM"
-    STATE_ASCENDING = "ASCENDING"
+    STATE_BOTTOM     = "BOTTOM"
+    STATE_ASCENDING  = "ASCENDING"
 
     STANDING_THRESHOLD = 160
-    BOTTOM_THRESHOLD = 110
+    BOTTOM_THRESHOLD   = 110
 
-    DEPTH_ANGLE_THRESHOLD = 100
-    TRUNK_ANGLE_THRESHOLD = 40
-    HIP_FLEX_THRESHOLD = 90
+    # 확실한 정상/오류 구간 (하이브리드 판별 기준)
+    KNEE_CLEAR_OK      = 100    # 이 이하면 확실히 충분한 깊이
+    KNEE_CLEAR_ERROR   = 130    # 이 이상이면 확실히 깊이 부족
+    TRUNK_CLEAR_OK     = 30     # 이 이하면 확실히 정상 (허리 안 굽음)
+    TRUNK_CLEAR_ERROR  = 40     # 이 이상이면 확실히 오류 (허리 굽음)
+    HIP_CLEAR_ERROR    = 100    # 이 이상이면 확실히 오류 (고관절 굴곡 부족)
+
+    MODEL_CONFIDENCE_THRESHOLD = 0.5
+
 
     def __init__(self, target_reps=5, target_count=10, rest_seconds=30):
         self.session = ExerciseSession(target_reps, target_count, rest_seconds)
@@ -263,13 +270,45 @@ class SquatChecker:
         return current_state
 
     def _check_bottom_form(self, trunk_angle, knee_angle, hip_flex_angle):
+        """
+        규칙+모델 하이브리드 판별.
+        확실한 정상/오류 구간은 모델 호출 없이 바로 처리하고,
+        애매한 구간에서만 학습된 모델을 호출.
+        오류 유형(깊이부족/허리굽음/고관절부족)은 항상 규칙이 결정한다.
+        """
         errors = []
-        if trunk_angle > self.TRUNK_ANGLE_THRESHOLD:
-            errors.append("Straighten your back")
-        if knee_angle > self.DEPTH_ANGLE_THRESHOLD:
+
+        # 1. 규칙: 확실한 오류 (모델 호출 없이 즉시 판정)
+        if knee_angle >= self.KNEE_CLEAR_ERROR:
             errors.append("Squat deeper")
-        if hip_flex_angle > self.HIP_FLEX_THRESHOLD:
+        if trunk_angle >= self.TRUNK_CLEAR_ERROR:
+            errors.append("Straighten your back")
+        if hip_flex_angle >= self.HIP_CLEAR_ERROR:
             errors.append("Bend at your hips more")
+
+        if errors:
+            return errors
+
+        # 2. 규칙: 확실한 정상 (모델 호출 없이 즉시 통과) 
+        if knee_angle <= self.KNEE_CLEAR_OK and trunk_angle <= self.TRUNK_CLEAR_OK:
+            return []
+
+        # 3. 애매한 구간: 학습된 모델(TensorRT)로 최종 판정 
+        input_array = np.array([knee_angle, hip_flex_angle, trunk_angle], dtype=np.float32)
+        output = squat_model.predict(input_array)
+        prob = float(output[0])
+
+        if prob > self.MODEL_CONFIDENCE_THRESHOLD:
+            # 모델은 "오류"만 판단, 어떤 오류인지는 규칙이 다시 결정
+            if knee_angle > self.KNEE_CLEAR_OK:
+                errors.append("Squat deeper")
+            if trunk_angle > self.TRUNK_CLEAR_OK:
+                errors.append("Straighten your back")
+            if hip_flex_angle > 90:
+                errors.append("Bend at your hips more")
+            if not errors:
+                errors.append("Check your form")
+
         return errors
 
     def _select_best_side(self, landmarks, w, h):
@@ -328,8 +367,7 @@ class SquatChecker:
             self.prev_knee_angle = knee_angle
 
             if self.current_state == self.STATE_BOTTOM:
-                self.bottom_snapshot_errors = self._check_bottom_form(
-                    trunk_angle, knee_angle, hip_flex_angle)
+                self.bottom_snapshot_errors = self._check_bottom_form(trunk_angle, knee_angle, hip_flex_angle)
 
             if move_done:
                 self.session.record_count(self.bottom_snapshot_errors)
@@ -342,24 +380,24 @@ class SquatChecker:
 
 
 # =========================================================
-# 바이셉컬 판별 (TRT 제거 → 각도 규칙 기반)
+# 바이셉컬 판별
 # =========================================================
 class BicepCurlChecker:
     name = "biceps_curl"   # 이름 통일: biceps_curl
 
-    STATE_EXTENDED = "EXTENDED"
-    STATE_CURLING = "CURLING"
-    STATE_FLEXED = "FLEXED"
+    STATE_EXTENDED  = "EXTENDED"
+    STATE_CURLING   = "CURLING"
+    STATE_FLEXED    = "FLEXED"
     STATE_EXTENDING = "EXTENDING"
 
     EXTENDED_THRESHOLD = 150
-    FLEXED_THRESHOLD = 65
+    FLEXED_THRESHOLD   = 65
 
     TRUNK_CLEAR_OK = 8
-    # MODEL_CONFIDENCE_THRESHOLD = 0.7   # TRT 미사용
+    MODEL_CONFIDENCE_THRESHOLD = 0.7
 
-    def __init__(self, target_reps=10):
-        self.session = ExerciseSession(target_reps)
+    def __init__(self, target_reps=10, target_count=10, rest_seconds=60):
+        self.session = ExerciseSession(target_reps, target_count, rest_seconds)
         self.current_state = self.STATE_EXTENDED
         self.prev_elbow_angle = 170
         self.flexed_snapshot_errors = []
@@ -397,33 +435,36 @@ class BicepCurlChecker:
         return current_state
 
     def _check_flexed_form(self, elbow_angle, trunk_angle):
-        """TRT 미사용: trunk_angle이 허용치를 넘으면 상체 젖힘으로 판정."""
+        """
+        Rule + Model
+        check based on rule first
+        after that, check with model to determine more correct
+        """
         errors = []
         if trunk_angle <= self.TRUNK_CLEAR_OK:
             return errors
 
-        errors.append("Straighten your back (lean back detected)")
+        # ----- TRT inference -----
+        input_array = np.array([elbow_angle, trunk_angle], dtype=np.float32)
+        output = bicep_curl_model.predict(input_array)
+        prob = float(output[0])
+
+        if prob > self.MODEL_CONFIDENCE_THRESHOLD:
+            errors.append("Straighten your back (lean back detected)")
         return errors
 
-        # # ---- 원래 TRT 추론 (미사용) ----
-        # input_array = np.array([elbow_angle, trunk_angle], dtype=np.float32)
-        # output = bicep_curl_model.predict(input_array)
-        # prob = float(output[0])
-        # if prob > self.MODEL_CONFIDENCE_THRESHOLD:
-        #     errors.append("Straighten your back (lean back detected)")
-        # return errors
 
     def _select_best_side(self, landmarks, w, h):
         l_shoulder, l_sv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER, w, h)
-        l_elbow, l_ev = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ELBOW, w, h)
-        l_wrist, l_wv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_WRIST, w, h)
-        l_hip, l_hv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
+        l_elbow, l_ev    = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ELBOW, w, h)
+        l_wrist, l_wv    = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_WRIST, w, h)
+        l_hip, l_hv      = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
         left_sum = l_sv + l_ev + l_wv + l_hv
 
         r_shoulder, r_sv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_SHOULDER, w, h)
-        r_elbow, r_ev = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ELBOW, w, h)
-        r_wrist, r_wv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_WRIST, w, h)
-        r_hip, r_hv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
+        r_elbow, r_ev    = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ELBOW, w, h)
+        r_wrist, r_wv    = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_WRIST, w, h)
+        r_hip, r_hv      = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
         right_sum = r_sv + r_ev + r_wv + r_hv
 
         if left_sum >= right_sum:
@@ -431,6 +472,17 @@ class BicepCurlChecker:
         return r_shoulder, r_elbow, r_wrist, r_hip, min(r_sv, r_ev, r_wv, r_hv), "right"
 
     def update(self, landmarks, w, h):
+        # check if it is resting time
+        self.session.update_rest()
+
+        # if done or resting, skip checker
+        if self.session.done or self.session.resting:
+            return {
+                "resting": self.session.resting,
+                "rest_remaining": self.session.rest_remaining(),
+                "done": self.session.done
+            }
+
         shoulder, elbow, wrist, hip, min_vis, side_used = self._select_best_side(landmarks, w, h)
 
         if min_vis <= 0.5:
@@ -439,15 +491,14 @@ class BicepCurlChecker:
         elbow_angle = calculate_angle(shoulder, elbow, wrist)
         trunk_angle = calculate_trunk_angle(shoulder, hip)
 
-        if not self.session.set_completed:
+        if not self.session.done:
             new_state = self._update_state(elbow_angle)
 
             if new_state != self.current_state:
                 print(f"[STATE CHANGE] {self.current_state} -> {new_state}  "
                       f"(elbow={int(elbow_angle)}, side={side_used})")
 
-            move_done = (self.current_state == self.STATE_EXTENDING
-                        and new_state == self.STATE_EXTENDED)
+            move_done = (self.current_state == self.STATE_EXTENDING and new_state == self.STATE_EXTENDED)
 
             self.current_state = new_state
             self.prev_elbow_angle = elbow_angle
@@ -456,7 +507,7 @@ class BicepCurlChecker:
                 self.flexed_snapshot_errors = self._check_flexed_form(elbow_angle, trunk_angle)
 
             if move_done:
-                self.session.record_rep(self.flexed_snapshot_errors)
+                self.session.record_count(self.flexed_snapshot_errors)
                 self.flexed_snapshot_errors = []
 
         return {
@@ -472,16 +523,17 @@ class PlankChecker:
     name = "plank"
 
     STATE_NOT_IN_PLANK = "NOT_IN_PLANK"
-    STATE_HOLDING = "HOLDING"
+    STATE_HOLDING      = "HOLDING"
 
-    HORIZONTAL_TILT_THRESHOLD = 45
-    ALIGNMENT_CLEAR_OK = 155
-    ALIGNMENT_CLEAR_ERROR = 110
-    # MODEL_CONFIDENCE_THRESHOLD = 0.5   # TRT 미사용
+    HORIZONTAL_TILT_THRESHOLD  = 45
+    ALIGNMENT_CLEAR_OK         = 155
+    ALIGNMENT_CLEAR_ERROR      = 110
+    MODEL_CONFIDENCE_THRESHOLD = 0.5   # TRT 미사용
 
-    def __init__(self, target_hold_seconds=60):
-        self.session = ExerciseSession(target_reps=1)
-        self.target_hold_seconds = target_hold_seconds
+    def __init__(self, target_reps=3, hold_seconds=60, rest_seconds=30):
+        # 플랭크는 "hold_seconds초 유지 = 1회"라 target_count=1로 고정
+        self.session = ExerciseSession(target_reps, target_count=1, rest_seconds=rest_seconds)
+        self.hold_seconds = hold_seconds       # 유지할 시간(초)
         self.current_state = self.STATE_NOT_IN_PLANK
         self.hold_start_time = None
         self.hold_errors_seen = set()
@@ -502,27 +554,28 @@ class PlankChecker:
                 return ["Raise your hips (back is too low)"]
             return ["Lower your hips (back is too high)"]
 
-        # 중간 구간도 규칙으로 처리 (원래 여기서 TRT 추론)
-        if hip_deviation > 0:
-            return ["Raise your hips (back is too low)"]
-        return ["Lower your hips (back is too high)"]
+        # ---- TRT Inference in mid range -----
+        input_array = np.array([body_alignment_angle, hip_deviation], dtype=np.float32)
+        output = plank_model.predict(input_array)
+        prob = float(output[0])
+        if prob > self.MODEL_CONFIDENCE_THRESHOLD:
+            # determined to error
+            if hip_deviation > 0:
+                return ["Raise your hips (back is too low)"]
+            else:
+                return ["Lower your hips (back is too high)"]
+        return []
 
-        # # ---- 원래 TRT 추론 (미사용) ----
-        # input_array = np.array([body_alignment_angle, hip_deviation], dtype=np.float32)
-        # output = plank_model.predict(input_array)
-        # prob = float(output[0])
-        # if prob > self.MODEL_CONFIDENCE_THRESHOLD:
-        #     ...
 
     def _select_best_side(self, landmarks, w, h):
         l_shoulder, l_sv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER, w, h)
-        l_hip, l_hv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
-        l_ankle, l_av = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ANKLE, w, h)
+        l_hip, l_hv      = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
+        l_ankle, l_av    = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ANKLE, w, h)
         left_sum = l_sv + l_hv + l_av
 
         r_shoulder, r_sv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_SHOULDER, w, h)
-        r_hip, r_hv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
-        r_ankle, r_av = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ANKLE, w, h)
+        r_hip, r_hv      = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
+        r_ankle, r_av    = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ANKLE, w, h)
         right_sum = r_sv + r_hv + r_av
 
         if left_sum >= right_sum:
@@ -530,6 +583,14 @@ class PlankChecker:
         return r_shoulder, r_hip, r_ankle, min(r_sv, r_hv, r_av), "right"
 
     def update(self, landmarks, w, h):
+        self.session.update_rest()
+        if self.session.done or self.session.resting:
+            return {
+                "resting": self.session.resting,
+                "rest_remaining": self.session.rest_remaining(),
+                "done": self.session.done,
+            }
+
         shoulder, hip, ankle, min_vis, side_used = self._select_best_side(landmarks, w, h)
 
         if min_vis <= 0.5:
@@ -543,7 +604,7 @@ class PlankChecker:
 
         elapsed = 0.0
 
-        if not self.session.set_completed:
+        if not self.session.done:
             if self.current_state == self.STATE_NOT_IN_PLANK:
                 if is_horizontal:
                     self.current_state = self.STATE_HOLDING
@@ -562,8 +623,8 @@ class PlankChecker:
                     self.hold_errors_seen.update(frame_errors)
 
                     elapsed = time.time() - self.hold_start_time
-                    if elapsed >= self.target_hold_seconds:
-                        self.session.record_rep(list(self.hold_errors_seen))
+                    if elapsed >= self.hold_seconds:              # target_count → hold_seconds
+                        self.session.record_count(list(self.hold_errors_seen))
                         self.current_state = self.STATE_NOT_IN_PLANK
                         self.hold_start_time = None
                         self.hold_errors_seen = set()
@@ -573,7 +634,7 @@ class PlankChecker:
             "angles": {"alignment": body_alignment_angle, "deviation": hip_deviation},
             "state": self.current_state,
             "elapsed": elapsed,
-            "target_seconds": self.target_hold_seconds,
+            "target_seconds": self.hold_seconds,
         }
 
 
@@ -584,8 +645,8 @@ def get_exercise_checker(exercise_name, target_reps=5, target_count=10, rest_sec
     if exercise_name == "squat":
         return SquatChecker(target_reps, target_count, rest_seconds)
     elif exercise_name == "biceps_curl":          # 이름 통일
-        return BicepCurlChecker(target_reps)
+        return BicepCurlChecker(target_reps, target_count, rest_seconds)
     elif exercise_name == "plank":
-        return PlankChecker(target_hold_seconds=target_count)
+        return PlankChecker(target_reps=target_reps, hold_seconds=target_count, rest_seconds=rest_seconds)
     else:
         raise ValueError(f"알 수 없는 운동: {exercise_name}")

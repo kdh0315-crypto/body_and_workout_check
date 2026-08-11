@@ -34,8 +34,8 @@ from module.workout_sel import workout_sel
 # 테스트가 빨리 끝나도록 count/sets/rest 를 작게 잡았다.
 MOCK_WORKOUT = {
     "recommendations": [
-        {"exercise": "squat", "priority": 1, "count": 1, "unit": "reps", "sets": 2, "reason": "테스트"},
-        {"exercise": "plank", "priority": 2, "count": 2, "unit": "reps", "sets": 1, "reason": "테스트2"},
+        {"exercise": "plank", "priority": 1, "count": 10, "unit": "reps", "sets": 1, "reason": "테스트2"},
+        {"exercise": "squat", "priority": 2, "count": 5, "unit": "reps", "sets": 2, "reason": "테스트"},
     ]
 }
 

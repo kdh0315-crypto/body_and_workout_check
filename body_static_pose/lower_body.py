@@ -108,16 +108,17 @@ def classify_pelvic_tilt_ant(angle):
     return "abnormal"
 
 
-# ========================================================
-# +. Knee valgus angle
+   # ========================================================
+# +. Knee alignment
 # ========================================================
 
-def calculate_knee_valgus_angle(
+def calculate_knee_alignment(
     hip,
     knee,
     ankle,
     width,
     height,
+    side,
 ):
     # normalized coordinate -> pixel coordinate
     hip_xy = np.array([
@@ -135,7 +136,7 @@ def calculate_knee_valgus_angle(
         ankle[1] * height,
     ], dtype=np.float32)
 
-    # knee -> hip vector
+    # knee -> hip / ankle vector
     knee_to_hip = hip_xy - knee_xy
     knee_to_ankle = ankle_xy - knee_xy
 
@@ -149,6 +150,28 @@ def calculate_knee_valgus_angle(
         return None
 
     # 일직선 정렬 = 0 deg
-    return float(180.0 - internal_angle)
+    deviation = float(180.0 - internal_angle)
 
-   
+    # HKA neutral 기준 참고: 3 deg 이하 normal
+    if deviation <= 3.0:
+        return {
+            "angle": deviation,
+            "direction": "normal",
+        }
+
+    # hip-ankle 기준선에서 knee의 좌우 위치 확인
+    dy = ankle_xy[1] - hip_xy[1]
+    if abs(dy) < 1e-6:
+        return None
+
+    t = (knee_xy[1] - hip_xy[1]) / dy
+    line_x = hip_xy[0] + t * (ankle_xy[0] - hip_xy[0])
+    knee_offset = knee_xy[0] - line_x
+
+    is_valgus = knee_offset < 0 if side == "left" else knee_offset > 0
+    direction = "valgus" if is_valgus else "varus"
+
+    return {
+        "angle": deviation,
+        "direction": direction,
+    }

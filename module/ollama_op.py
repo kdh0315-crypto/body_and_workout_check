@@ -12,9 +12,9 @@ REF_RANGES = {
 
 # 운동 3종 + 안전 범위 (횟수는 코드에서 이 범위로 clamp)
 EXERCISE_POOL = {
-    "squat":       {"unit": "reps",    "count": (8, 20),  "sets": (2, 4), "rest": (20, 90)},
-    "plank":       {"unit": "seconds", "count": (15, 60), "sets": (2, 3), "rest": (30, 120)},
-    "biceps_curl": {"unit": "reps",    "count": (8, 15),  "sets": (2, 4), "rest": (20, 90)},
+    "squat":   {"unit": "reps",    "count": (8, 20),  "sets": (2, 4), "rest": (20, 90)},
+    "lunge":   {"unit": "seconds", "count": (15, 60), "sets": (2, 3), "rest": (30, 120)},
+    "push_up": {"unit": "reps",    "count": (8, 15),  "sets": (2, 4), "rest": (20, 90)},
 }
 
 
@@ -117,8 +117,8 @@ Respond ONLY in this JSON format:
 {{
   "recommendations": [
     {{"exercise": "squat", "priority": 1, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 45, "reason": "..."}},
-    {{"exercise": "plank", "priority": 2, "count": 30, "unit": "seconds", "sets": 3, "rest_seconds": 30, "reason": "..."}},
-    {{"exercise": "biceps curl", "priority": 3, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 60, "reason": "..."}}
+    {{"exercise": "lunge", "priority": 2, "count": 30, "unit": "seconds", "sets": 3, "rest_seconds": 30, "reason": "..."}},
+    {{"exercise": "push_up", "priority": 3, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 60, "reason": "..."}}
   ]
 }}"""
 

@@ -1,16 +1,17 @@
 """
-운동 자세 실시간 판별 모듈 (규칙 기반 버전)
+운동 자세 실시간 판별 모듈 (규칙 기반 + LSTM 운동 종류 자동 인식)
 
 스쿼트 / 푸시업 / 런지의 자세를 실시간으로 판별하고 rep(횟수)을 카운트한다.
 바이셉컬·플랭크는 종목 구성이 스쿼트/푸시업/런지/noaction(LSTM 자동 인식)으로
-바뀌면서 제거되었다. 모든 종목은 학습 모델 없이 순수 규칙(각도 임계값)으로만
-정상/오류를 판별한다.
+바뀌면서 제거되었다. 각 Checker의 정상/오류 판별은 학습 모델 없이 순수 규칙
+(각도 임계값)으로만 이루어진다.
 
 Mediapipe 초기화·좌표 추출·기본 각도 함수는 동현님 프로젝트의
 mediapipe_op / basic_fn 모듈을 재사용한다.
 
-TRTModel 클래스는 이후 LSTM(운동 종류 자동 인식) 엔진을 로드할 때
-재사용할 예정이라 그대로 남겨둔다. (지금은 어떤 Checker도 모델을 쓰지 않음)
+TRTModel은 범용 TRT 추론 래퍼이고, ActionRecognizer가 이를 이용해
+30프레임 시퀀스(132차원 = 33 landmark x [x,y,z,visibility])로부터
+현재 운동 종류(pushup/squat/lunge/noactions)를 예측한다.
 """
 
 import math
@@ -18,7 +19,6 @@ import time
 
 import numpy as np
 
-# ===== LSTM 연결 전까지는 미사용, 클래스만 남겨둠 =====
 import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit  # noqa: F401
@@ -30,8 +30,7 @@ from module.mediapipe_op import mp_pose, get_landmark_xy
 
 
 # =========================================================
-# TRT 추론 클래스 (현재 어떤 Checker도 사용하지 않음)
-# LSTM(.trt) 엔진이 준비되면 여기서 로드해서 "운동 종류 인식" 용도로 사용 예정.
+# TRT 추론 클래스 (범용 래퍼)
 # =========================================================
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
@@ -63,9 +62,62 @@ class TRTModel:
         return output_array
 
 
-# ===== 학습된 TRT 엔진 로드 =====
+# =========================================================
+# LSTM 기반 운동 종류 자동 인식 (ActionRecognizer)
+# 최근 SEQ_LEN 프레임의 키포인트 시퀀스를 모아 TRTModel(lstm.trt)로 추론한다.
+# =========================================================
+LSTM_ENGINE_PATH = "models/lstm.trt"   # 프로젝트 루트 기준 (동일 Jetson에서 빌드한 엔진)
 
-#  LSTM 엔진이 준비되면 여기서 다시 로드
+ACTIONS = np.array(["pushup", "squat", "lunge", "noactions"])
+SEQ_LEN = 30
+NUM_FEATURES = 132   # 33 landmark x (x, y, z, visibility)
+
+
+def extract_keypoints(landmarks):
+    """PoseLandmarker 랜드마크 리스트 -> 132차원 벡터. 감지 실패 시 0으로."""
+    if landmarks is None:
+        return np.zeros(NUM_FEATURES, dtype=np.float32)
+    return np.array(
+        [[lm.x, lm.y, lm.z, lm.visibility] for lm in landmarks],
+        dtype=np.float32,
+    ).flatten()
+
+
+class ActionRecognizer:
+    """
+    매 프레임 update(landmarks)를 호출해 키포인트를 쌓다가,
+    SEQ_LEN 프레임이 모이면 LSTM 엔진으로 운동 종류를 예측한다.
+    """
+
+    def __init__(self, engine_path=LSTM_ENGINE_PATH, seq_len=SEQ_LEN,
+                 num_features=NUM_FEATURES, actions=ACTIONS, threshold=0.5):
+        self.model = TRTModel(engine_path)
+        self.seq_len = seq_len
+        self.num_features = num_features
+        self.actions = actions
+        self.threshold = threshold
+        self.sequence = []
+
+    def reset(self):
+        self.sequence = []
+
+    def update(self, landmarks):
+        """
+        landmarks: extract_landmarks_video 결과의 results.pose_landmarks[0] (또는 None)
+        반환: SEQ_LEN 프레임이 아직 안 모였으면 None,
+              모였으면 (action_name, confidence) — threshold 미만이면 action_name="..."
+        """
+        self.sequence.append(extract_keypoints(landmarks))
+        self.sequence = self.sequence[-self.seq_len:]
+
+        if len(self.sequence) < self.seq_len:
+            return None
+
+        probs = self.model.predict(np.array(self.sequence))   # (SEQ_LEN, NUM_FEATURES) -> (len(actions),)
+        idx = int(np.argmax(probs))
+        confidence = float(probs[idx])
+        action_name = self.actions[idx] if confidence > self.threshold else "..."
+        return action_name, confidence
 
 
 # =========================================================

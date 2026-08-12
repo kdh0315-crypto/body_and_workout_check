@@ -6,8 +6,8 @@ MediaPipe Pose 기반으로 정면/측면 촬영 이미지에서 자세를 분�
 
 - **입력**: 웹캠으로 정면 / 측면 자세 2장 순차 촬영
 - **분석**: MediaPipe Pose 랜드마크 추출 → 자세 지표(각도) 계산 → 임계값 비교로 편차 검출
-- **추천**: 사전 필터링된 이상 항목만 로컬 LLM(Ollama, gemma3:4b)에 전달 → 운동 매칭·우선순위·설명 생성
-- **운동 진행**: FSM 기반 `workout_sel`이 우선순위 순으로 운동을 순차 배출
+- **추천**: 사전 필터링된 이상 항목만 로컬 LLM(Ollama, gemma3:4b)에 전달 → 스트레칭 표시 + 운동 처방(우선순위·세트·횟수) 생성
+- **운동 진행**: FSM 기반 `workout_sel`이 우선순위 순으로 운동을 순차 배출 → `workout_checker`가 실시간 rep 판별
 
 ### 하이브리드 아키텍처
 
@@ -33,10 +33,13 @@ MediaPipe 랜드마크 추출 (save_with_pose / extract_landmarks)
 find_abnormal() — REF_RANGES 대비 편차 계산·심각도 정렬
         │
         ▼ (이상 항목만 전달)
-Ollama (gemma3:4b) — 운동 매칭·우선순위·설명 (JSON)
+Ollama (gemma3:4b) — recommend_stretches(표시용) / prescribe_workouts(EXERCISE_POOL 처방, JSON)
         │
         ▼
 workout_sel — 우선순위 순 운동 진행 (idle → work → idle)
+        │
+        ▼
+workout_checker — Checker로 rep 판별·카운트 (+ ActionRecognizer로 운동 종류 자동 인식, 아직 미연결)
 ```
 
 ## 파일 구조
@@ -47,29 +50,36 @@ project/
 ├── README.md
 ├── .gitignore
 │
+├── models/
+│   ├── lstm.onnx                # 운동 종류 자동 인식 LSTM (Keras -> ONNX 변환본)
+│   └── lstm.trt                 # 위 ONNX를 이 Jetson에서 TensorRT로 빌드한 엔진 (ActionRecognizer가 로드)
+│
 ├── gui/
 │   ├── gui.py                  # UserInfoForm(정보 입력) + CameraView(촬영·분석)
 │   └── gui_style.py            # STYLE: 다크 테마 QSS 문자열
 │
-├── module/
-│   ├── basic_fn.py             # 공용 계산 유틸 (3점 각도, 픽셀 변환, 중간점)
-│   ├── cal_angle.py            # Mediapipe 출력 결과에서 각도를 계산하기 위한 함수 모음
-│   ├── mediapipe_op.py         # CaptureForm + MediaPipe Tasks 랜드마커·스켈레톤·좌표 추출
-│   ├── upper_body.py           # 상체 각도 추출: FHA, FSA, shoulder tilt, thoracic kyphosis
-│   ├── lower_body.py           # 하체 각도 추출: anterior pelvic tilt, knee valgus
-│   ├── ollama_op.py            # REF_RANGES, find_abnormal, 프롬프트, Ollama 호출
-│   ├── workout_sel.py          # workout_sel FSM - 추천된 운동 순차적으로 실행
-│   ├── test_fn.py              # Test & Debug용 함수 모음
-│   └── models/
-│       └── pose_landmarker_full.task   # MediaPipe Pose Landmarker 모델
-│
-└── docs/
-    └── Effect_of_Rounded_and_Hunched_Shoulder_Postures...pdf  # RSA/HSA 참고 논문
+└── module/
+    ├── basic_fn.py             # 공용 계산 유틸 (3점 각도, 픽셀 변환, 중간점)
+    ├── cal_angle.py            # Mediapipe 출력 결과에서 각도를 계산하기 위한 함수 모음
+    ├── mediapipe_op.py         # CaptureForm + MediaPipe Tasks 랜드마커·스켈레톤·좌표 추출
+    ├── upper_body.py           # 상체 각도 추출: FHA, FSA, shoulder tilt, thoracic kyphosis
+    ├── lower_body.py           # 하체 각도 추출: anterior pelvic tilt, knee valgus
+    ├── ollama_op.py            # REF_RANGES/find_abnormal, 스트레칭 추천 + EXERCISE_POOL 기반 운동 처방 (Ollama 호출 2종)
+    ├── workout_sel.py          # workout_sel FSM - 추천된 운동 순차적으로 실행
+    ├── workout_checker.py      # 스쿼트/푸시업/런지 규칙 기반 Checker(rep 카운트) + ActionRecognizer(LSTM 운동 종류 자동 인식)
+    ├── test_fn.py              # Test & Debug용 함수 모음
+    ├── test_sel_checker.py     # workout_sel + workout_checker 연동 테스트 (GUI 없이 카메라로 검증)
+    └── models/
+        ├── pose_landmarker_full.task          # MediaPipe Pose Landmarker 모델
+        ├── squat_classifier.onnx / .trt       # (구버전) 스쿼트 분류기 — 현재 SquatChecker는 규칙 기반, 미사용
+        ├── plank_classifier.onnx / .trt       # (구버전) 플랭크 분류기 — 종목 구성 변경으로 미사용
+        └── bicep_curl_classifier.onnx / .trt  # (구버전) 바이셉컬 분류기 — 종목 구성 변경으로 미사용
 ```
 
 > 참고: `main.py`는 `from module.* import *` 와 `from gui.gui import *` 형태로 import하므로,
 > `gui/`·`module/`은 패키지로 인식되도록 실행 위치(루트)에서 실행해야 한다.
-> MediaPipe 모델 경로는 `mediapipe_op.py`에 `module/models/pose_landmarker_full.task`로 하드코딩되어 있다.
+> MediaPipe 모델 경로는 `mediapipe_op.py`에 `module/models/pose_landmarker_full.task`로 하드코딩되어 있고,
+> LSTM 엔진 경로는 `workout_checker.py`에 프로젝트 루트 기준 `models/lstm.trt`로 하드코딩되어 있다(경로 위치가 다르므로 주의).
 
 ## 자세 지표
 
@@ -109,10 +119,11 @@ project/
 ### 이상 검출 & 추천 (`module/ollama_op.py`)
 - **REF_RANGES**: 지표별 `(label, normal_min, normal_max, direction)`. direction은 `abs`/`high`/`low`
 - **find_abnormal**: 정상 범위 밖 항목만 추려 편차 크기 내림차순 정렬
-- **build_prompt**: 영어 지시 프롬프트. 이상 항목만 나열, 상위 2개만 추천, 각 이유는 짧게, JSON만 출력 요구
+- **EXERCISE_POOL**: 운동별 `unit`/`count`/`sets`/`rest` 안전 범위. 현재 `squat`, `lunge`, `push_up` 3종
+- Ollama 호출은 두 갈래로 분리됨
+  - **build_stretch_prompt / recommend_stretches**: 이상 항목 → 스트레칭 이름·이유 JSON (표시 전용, `workout_sel`과 무관)
+  - **build_workout_prompt / prescribe_workouts**: 목표(`GOAL_DESC`)·레벨 → `EXERCISE_POOL` 전 종목을 포함한 처방 JSON, `count`/`sets`/`rest_seconds`는 안전 범위로 `_clamp`, 목록 밖 운동은 폐기 → `workout_sel.load_workout()`이 받는 `{"recommendations": [...]}` 형식으로 반환
 - **ask_ollama**: `model="gemma3:4b"`, `format="json"`, `temperature=0`, `num_ctx=2048`, `keep_alive="0"`
-- **recommend_exercise**: 판정 → 프롬프트 → 호출 → JSON 파싱 → 우선순위 정렬 출력
-- 현재 `AVAILABLE_EXERCISES = "squat, plank, biceps curl"`
 
 ### workout_sel (`module/workout_sel.py`)
 - 상태: `idle` / `work`
@@ -120,6 +131,13 @@ project/
 - `current_workout()`: 현재 운동 반환(없으면 None)
 - `next_workout(work_done)`: `work_done=True`일 때만 `work_cnt` 증가, 모두 끝나면 `idle` 복귀
 - 테스트: `module/test_fn.py`의 `test_workout_sel`, `test_edge_cases`
+
+### 운동 판별 (`module/workout_checker.py`)
+- **SquatChecker / PushupChecker / LungeChecker**: 종목별 상태 머신 + 각도 임계값으로 rep마다 정상/오류 판별 (학습 모델 미사용). `get_exercise_checker(exercise_name, ...)`로 이름별 인스턴스 생성
+- **ExerciseSession**: 세 Checker 공통 세트/rep 카운트, 세트 간 휴식(`rest_seconds`) 관리
+- **ActionRecognizer**: `models/lstm.trt`(TensorRT로 빌드한 LSTM)를 `TRTModel`로 로드해, 최근 30프레임 × 132차원(33 landmark × x,y,z,visibility) 키포인트 시퀀스로 현재 운동 종류(`pushup`/`squat`/`lunge`/`noactions`)를 예측
+  - Checker들이 "지금 하는 운동이 맞는지" 규칙으로 판별하는 것과 달리, ActionRecognizer는 "지금 무슨 운동을 하는지" 자체를 인식하는 용도
+  - 아직 `workout_sel`/GUI 파이프라인에는 연결되지 않은 독립 컴포넌트 (`module/test_sel_checker.py`도 현재는 `MOCK_WORKOUT` 고정 순서만 검증)
 
 ## 개발 환경
 
@@ -142,15 +160,17 @@ python main.py
 
 **완료**
 - 자세 지표 계산 함수 (FHA/FSA/shoulder tilt/kyphosis/pelvic tilt/knee valgus)
-- `REF_RANGES` / `find_abnormal` / Ollama 프롬프트·호출
+- `REF_RANGES` / `find_abnormal`, 스트레칭 추천·운동 처방(`EXERCISE_POOL`) Ollama 프롬프트·호출 분리
 - `workout_sel` FSM (+ 단위 테스트)
 - CaptureForm (디바운싱) + MediaPipe Tasks 파이프라인
 - PySide6 다크 테마 GUI (정보 입력 → 촬영 → 좌표 추출)
+- 스쿼트/푸시업/런지 규칙 기반 실시간 Checker + rep 카운트 (`workout_checker.py`)
+- LSTM 운동 종류 자동 인식 엔진(`models/lstm.trt`) 확보 + `ActionRecognizer` 연동
 
 **진행 예정**
-- 추출된 관절 좌표를 각도 계산 함수에 연결 → `metrics` dict 구성 → `recommend_exercise` 호출까지 파이프라인 결선 (현재 좌표 추출 후 콘솔 출력에서 끊김)
+- 추출된 관절 좌표를 각도 계산 함수에 연결 → `metrics` dict 구성 → `prescribe_workouts` 호출까지 파이프라인 결선 (현재 좌표 추출 후 콘솔 출력에서 끊김)
 - REF_RANGES 지표 키와 실제 계산 함수 출력 이름 정합 (예: `forward_head`↔FHA, `round_shoulder`↔FSA 매핑)
-- `AVAILABLE_EXERCISES`를 실제 목표 운동(W/Y raise, 승모근 스트레칭 등)으로 확장
+- `ActionRecognizer`를 `workout_sel`/GUI 파이프라인과 연결 (현재는 독립 컴포넌트, 화면 표시나 처방 검증에 미사용)
 - Knee valgus 임계값 캘리브레이션 (MediaPipe 무릎 각도 오차, 정상군 데이터 기반 보정 필요)
 - XGBoost 분류기를 Layer 2 오류 분류 모델로 도입 검토
 

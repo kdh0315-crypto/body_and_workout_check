@@ -14,7 +14,7 @@ from module.mediapipe_op import *      # CaptureForm, save_with_pose 등
 from module.workout_sel import *
 from module.cal_angle import *
 from module.ollama_op import *
-from module.fha_integration import FHAIntegration
+
 
 from gui.gui_style import *
 
@@ -80,7 +80,7 @@ class CameraView(QWidget):
         self.setWindowTitle("자세 촬영")
         self.user_info = user_info          # 폼에서 넘어온 age/level/goal
         self.cap_form = CaptureForm()       # 앞서 만든 촬영 상태 관리 클래스
-        self.fha_integration = FHAIntegration()
+        
 
         layout = QVBoxLayout()
 
@@ -182,33 +182,13 @@ class CameraView(QWidget):
         front_features = calculate_all_features(front_results.pose_landmarks[0], fw, fh)
         side_features  = calculate_all_features(side_results.pose_landmarks[0], sw, sh)
 
-        # FHA: Rule(EAR-SHOULDER) -> TensorRT AI -> Fusion
-        try:
-            fha_result = self.fha_integration.analyze(
-                side_img,
-                side_features.get("fha_deg"),
-            )
-        except Exception as exc:
-            self.status_label.setText(f"FHA AI 실행 실패: {exc}")
-            print("[FHA AI ERROR]", exc)
-            self._restart()
-            return
 
-        print(
-            f'FHA Rule: {fha_result["angle"]} / {fha_result["rule"]}'
-        )
-        print(
-            f'FHA AI: {fha_result["ai_score"]:.4f} / {fha_result["ai"]}'
-        )
-        print(
-            f'FHA Fusion: {fha_result["fusion"]}'
-        )
-
+        print( "FHA Rule:", side_features.get("fha_deg"), "/", classify_fha(side_features.get("fha_deg")) )
         print("front_features:", front_features)
         print("side_features:", side_features)
 
         metrics = features_to_metrics(front_features, side_features)
-        metrics["forward_head_fusion"] = fha_result["fusion"]
+        
         print("metrics:", metrics)
 
         # 3) 로딩 오버레이 표시

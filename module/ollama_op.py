@@ -2,12 +2,11 @@ import json
 import ollama
 
 REF_RANGES = {
-    "shoulder_tilt":     ("Shoulder lateral tilt",              0,  2, "abs"),
+    "shoulder_tilt": ("Shoulder lateral tilt", 0, 2.5, "abs"),
     "knee_valgus":       ("Knee alignment deviation (L/R avg)", 0,  5, "high"),
     "forward_head":      ("Forward head posture (EAR-SHOULDER proxy)", 0, 32, "high"),
-    "round_shoulder":    ("Round shoulder angle",               0, 52, "high"),
-    "thoracic_kyphosis": ("Thoracic kyphosis angle",           30, 40, "high"),
-    "pelvic_tilt_ant":   ("Anterior pelvic tilt angle",         5, 10, "high"),
+   "thoracic_kyphosis": ("Thoracic posture proxy",            80, 90, "high"),
+    "pelvic_tilt_ant": ("Pelvic / hip-trunk alignment proxy", 0, 18, "high"),
 }
 
 # 운동 3종 + 안전 범위 (횟수는 코드에서 이 범위로 clamp)
@@ -21,27 +20,13 @@ EXERCISE_RANGES = {
 def find_abnormal(metrics: dict) -> list:
     """정상 범위를 벗어난 항목을 반환한다. FHA는 Fusion 결과를 최종 판정으로 사용한다."""
     abnormal = []
-    fha_fusion = metrics.get("forward_head_fusion")
+ 
 
     for key, (label, lo, hi, direction) in REF_RANGES.items():
         if key not in metrics:
             continue
 
         v = metrics[key]
-
-        # FHA는 Rule 각도 자체가 아니라 Rule + AI Fusion 결과를 최종 판정으로 사용한다.
-        if key == "forward_head" and fha_fusion is not None:
-            if fha_fusion != "FUSION_ABNORMAL":
-                continue
-
-            dev = max(float(v) - 32.0, 0.0)
-            abnormal.append({
-                "label": label,
-                "value": v,
-                "range": "<32 (project rule) + AI fusion",
-                "deviation": round(max(dev, 0.1), 1),
-            })
-            continue
 
         if lo <= v <= hi:
             continue

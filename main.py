@@ -31,7 +31,7 @@ import pycuda.autoinit  # noqa: F401  (CUDA 컨텍스트 초기화)
 
 
 # ===================== 설정 =====================
-POSE_MODEL_PATH = "models/pose_landmarker_lite.task"
+POSE_MODEL_PATH = "models/pose_landmarker_full.task"
 LSTM_ENGINE_PATH = "models/lstm.trt"      # 이 Jetson에서 빌드한 엔진
 
 ACTIONS = np.array(['pushup', 'squat', 'lunge', 'noactions'])

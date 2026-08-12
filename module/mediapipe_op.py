@@ -1,8 +1,12 @@
-import mediapipe as mp
 import cv2
 import numpy as np
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
 from basic_fn import *
+
+
 
 def get_landmark_xy(landmarks, landmark_enum, image_width, image_height):
     """정규화된 좌표(0~1)를 실제 픽셀 좌표로 변환해서 반환"""

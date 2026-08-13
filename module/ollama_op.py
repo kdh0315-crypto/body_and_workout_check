@@ -14,7 +14,7 @@ REF_RANGES = {
 EXERCISE_POOL = {
     "squat":   {"unit": "reps",    "count": (8, 20),  "sets": (2, 4), "rest": (20, 90)},
     "lunge":   {"unit": "seconds", "count": (15, 60), "sets": (2, 3), "rest": (30, 120)},
-    "push_up": {"unit": "reps",    "count": (8, 15),  "sets": (2, 4), "rest": (20, 90)},
+    "pushup":  {"unit": "reps",    "count": (8, 15),  "sets": (2, 4), "rest": (20, 90)},
 }
 
 
@@ -105,7 +105,7 @@ Available exercises and SAFE ranges (do not exceed):
 {ranges_text}
 
 Instructions:
-- Include ALL of the exercises listed above (squat, plank, biceps curl). Do not omit any.
+- Include ALL of the exercises listed above (squat, lunge, pushup). Do not omit any.
 - For each exercise, assign count and sets WITHIN its safe range, matched to the user's goal.
 - Set "priority" as the order to perform (1 = first), ordering them to fit the goal.
 - Use the unit shown above for each exercise.
@@ -118,7 +118,7 @@ Respond ONLY in this JSON format:
   "recommendations": [
     {{"exercise": "squat", "priority": 1, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 45, "reason": "..."}},
     {{"exercise": "lunge", "priority": 2, "count": 30, "unit": "seconds", "sets": 3, "rest_seconds": 30, "reason": "..."}},
-    {{"exercise": "push_up", "priority": 3, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 60, "reason": "..."}}
+    {{"exercise": "pushup", "priority": 3, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 60, "reason": "..."}}
   ]
 }}"""
 

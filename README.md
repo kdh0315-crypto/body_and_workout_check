@@ -70,7 +70,7 @@ project/
     ├── test_fn.py              # Test & Debug용 함수 모음
     ├── test_sel_checker.py     # workout_sel + workout_checker 연동 테스트 (GUI 없이 카메라로 검증)
     └── models/
-        ├── pose_landmarker_full.task          # MediaPipe Pose Landmarker 모델
+        ├── pose_landmarker_lite.task          # MediaPipe Pose Landmarker 모델 (Jetson 속도 위해 lite로 변경, full은 다운로드 시 생성)
         ├── squat_classifier.onnx / .trt       # (구버전) 스쿼트 분류기 — 현재 SquatChecker는 규칙 기반, 미사용
         ├── plank_classifier.onnx / .trt       # (구버전) 플랭크 분류기 — 종목 구성 변경으로 미사용
         └── bicep_curl_classifier.onnx / .trt  # (구버전) 바이셉컬 분류기 — 종목 구성 변경으로 미사용
@@ -78,8 +78,8 @@ project/
 
 > 참고: `main.py`는 `from module.* import *` 와 `from gui.gui import *` 형태로 import하므로,
 > `gui/`·`module/`은 패키지로 인식되도록 실행 위치(루트)에서 실행해야 한다.
-> MediaPipe 모델 경로는 `mediapipe_op.py`에 `module/models/pose_landmarker_full.task`로 하드코딩되어 있고,
-> LSTM 엔진 경로는 `workout_checker.py`에 프로젝트 루트 기준 `models/lstm.trt`로 하드코딩되어 있다(경로 위치가 다르므로 주의).
+> MediaPipe 모델 경로는 `mediapipe_op.py`에 `module/models/pose_landmarker_lite.task`로 하드코딩되어 있고,
+> LSTM 엔진 경로는 `workout_checker.py`에 프로젝트 루트 기준 `models/lstm_15frame.trt`로 하드코딩되어 있다(경로 위치가 다르므로 주의).
 
 ## 자세 지표
 
@@ -111,7 +111,7 @@ project/
 - 측면까지 완료되면 `(front_img, side_img)` 반환하고 `done = True`
 
 ### MediaPipe (`module/mediapipe_op.py`)
-- **Tasks API** 사용 (`vision.PoseLandmarker`, `pose_landmarker_full.task`), IMAGE / VIDEO 러닝 모드 둘 다 초기화
+- **Tasks API** 사용 (`vision.PoseLandmarker`, `pose_landmarker_lite.task` — Jetson에서 `pose_landmarker_full.task`가 병목이라 lite로 교체), IMAGE / VIDEO 러닝 모드 둘 다 초기화
 - 스켈레톤 드로잉은 legacy `mp.solutions.drawing_utils` + `POSE_CONNECTIONS` 사용 (Tasks 결과를 `NormalizedLandmarkList` proto로 변환)
 - `KEY_LANDMARKS`로 코·귀·어깨·엉덩이·무릎·발목만 이름 기반 추출
 - 좌표 추출: `get_landmark_pixels`(픽셀), `get_pose_point`(이름별 픽셀), `get_pose_point_norm`(이름별 정규화, `with_vis` 옵션)
@@ -119,7 +119,7 @@ project/
 ### 이상 검출 & 추천 (`module/ollama_op.py`)
 - **REF_RANGES**: 지표별 `(label, normal_min, normal_max, direction)`. direction은 `abs`/`high`/`low`
 - **find_abnormal**: 정상 범위 밖 항목만 추려 편차 크기 내림차순 정렬
-- **EXERCISE_POOL**: 운동별 `unit`/`count`/`sets`/`rest` 안전 범위. 현재 `squat`, `lunge`, `push_up` 3종
+- **EXERCISE_POOL**: 운동별 `unit`/`count`/`sets`/`rest` 안전 범위. 현재 `squat`, `lunge`, `pushup` 3종 (workout_checker의 Checker 이름·ActionRecognizer.ACTIONS와 동일한 명명 사용)
 - Ollama 호출은 두 갈래로 분리됨
   - **build_stretch_prompt / recommend_stretches**: 이상 항목 → 스트레칭 이름·이유 JSON (표시 전용, `workout_sel`과 무관)
   - **build_workout_prompt / prescribe_workouts**: 목표(`GOAL_DESC`)·레벨 → `EXERCISE_POOL` 전 종목을 포함한 처방 JSON, `count`/`sets`/`rest_seconds`는 안전 범위로 `_clamp`, 목록 밖 운동은 폐기 → `workout_sel.load_workout()`이 받는 `{"recommendations": [...]}` 형식으로 반환
@@ -135,7 +135,7 @@ project/
 ### 운동 판별 (`module/workout_checker.py`)
 - **SquatChecker / PushupChecker / LungeChecker**: 종목별 상태 머신 + 각도 임계값으로 rep마다 정상/오류 판별 (학습 모델 미사용). `get_exercise_checker(exercise_name, ...)`로 이름별 인스턴스 생성
 - **ExerciseSession**: 세 Checker 공통 세트/rep 카운트, 세트 간 휴식(`rest_seconds`) 관리
-- **ActionRecognizer**: `models/lstm.trt`(TensorRT로 빌드한 LSTM)를 `TRTModel`로 로드해, 최근 30프레임 × 132차원(33 landmark × x,y,z,visibility) 키포인트 시퀀스로 현재 운동 종류(`pushup`/`squat`/`lunge`/`noactions`)를 예측
+- **ActionRecognizer**: `models/lstm_15frame.trt`(15프레임 시퀀스로 재학습한 TensorRT 엔진)를 `TRTModel`로 로드해, 최근 15프레임 × 132차원(33 landmark × x,y,z,visibility) 키포인트 시퀀스로 현재 운동 종류(`pushup`/`squat`/`lunge`/`noactions`)를 예측
   - Checker들이 "지금 하는 운동이 맞는지" 규칙으로 판별하는 것과 달리, ActionRecognizer는 "지금 무슨 운동을 하는지" 자체를 인식하는 용도
   - 아직 `workout_sel`/GUI 파이프라인에는 연결되지 않은 독립 컴포넌트 (`module/test_sel_checker.py`도 현재는 `MOCK_WORKOUT` 고정 순서만 검증)
 

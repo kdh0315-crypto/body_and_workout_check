@@ -4,13 +4,17 @@ workout_sel + workout_checker 연동 테스트 (GUI 없이 검증용)
 흐름:
   1) workout_sel 에 운동 목록(LLM 처방 형식)을 로드
   2) 현재 운동으로 체커를 생성
-  3) 카메라로 실시간 판별 → 한 운동의 모든 세트 완료(session.done) 시
-  4) workout_sel.next_workout() 으로 다음 운동을 받아 체커 교체
+  3) 카메라로 실시간 판별 → ActionRecognizer(LSTM)가 인식한 운동이
+     selector가 지시한 운동(checker.name)과 같을 때만 매 프레임 checker.update()로
+     카운트 (레퍼런스인 FormFit과 동일한 각도 기반 방식)
+  4) 한 운동의 모든 세트 완료(session.done) 시 workout_sel.next_workout() 으로
+     다음 운동을 받아 체커 교체
   5) 목록이 끝나면 종료
 
 주의:
-  현재 스쿼트만 새 세션 구조(record_count/done/target_count)로 갱신됨.
-  바이셉컬·플랭크는 아직 구버전이라, 이 테스트는 squat 위주로 구성한다.
+  운동 이름은 workout_checker.get_exercise_checker / ActionRecognizer.ACTIONS와
+  동일하게 "squat" / "pushup" / "lunge" 를 사용해야 한다 (EXERCISE_POOL도 동일).
+  바이셉컬·플랭크는 종목 구성에서 제외되어 더 이상 지원하지 않는다.
 
 조작:
   'r' - 현재 운동 리셋
@@ -25,7 +29,7 @@ from module.mediapipe_op import (
     has_landmarks,
     draw_skeleton,
 )
-from module.workout_checker import get_exercise_checker
+from module.workout_checker import get_exercise_checker, ActionRecognizer
 from module.workout_sel import workout_sel
 
 
@@ -34,8 +38,8 @@ from module.workout_sel import workout_sel
 # 테스트가 빨리 끝나도록 count/sets/rest 를 작게 잡았다.
 MOCK_WORKOUT = {
     "recommendations": [
-        {"exercise": "plank", "priority": 1, "count": 10, "unit": "reps", "sets": 1, "reason": "테스트2"},
-        {"exercise": "squat", "priority": 2, "count": 5, "unit": "reps", "sets": 2, "reason": "테스트"},
+        {"exercise": "pushup", "priority": 1, "count": 5, "unit": "reps", "sets": 2, "reason": "테스트"},
+        {"exercise": "pushup", "priority": 2, "count": 10, "unit": "reps", "sets": 1, "reason": "테스트2"},
     ]
 }
 
@@ -65,6 +69,10 @@ def main():
     checker = make_checker(current)
     print(f"\n===== 현재 운동: {current['exercise']} "
           f"({current['count']}회 x {current['sets']}세트) =====\n")
+
+    # LSTM으로 "지금 실제로 하고 있는 운동"을 인식 → selector가 지시한 운동과
+    # 일치할 때만 checker로 카운트한다.
+    recognizer = ActionRecognizer()
 
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -110,13 +118,23 @@ def main():
         else:
             # ----- 운동 판별 중 -----
             results = extract_landmarks_video(frame, ts)
+            recognized_action = None
             if has_landmarks(results):
                 landmarks = results.pose_landmarks[0]
-                checker.update(landmarks, w, h)
+
+                # LSTM으로 실제 동작 인식 (버퍼가 덜 찼으면 None)
+                action_result = recognizer.update(landmarks)
+                if action_result is not None:
+                    recognized_action, _confidence = action_result
+
+                # selector가 지시한 운동(checker.name)과 인식된 운동이 같을 때만 카운트
+                if recognized_action == checker.name:
+                    checker.update(landmarks, w, h)
+
                 frame = draw_skeleton(frame, results)
 
             session = checker.session
-            cv2.putText(frame, f"Exercise: {checker.name}",
+            cv2.putText(frame, f"Exercise: {checker.name}  (Recognized: {recognized_action or '...'})",
                         (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             cv2.putText(frame, f"Set: {session.rep_count}/{session.target_reps}  "
                                f"Count: {session.count}/{session.target_count}",
@@ -134,6 +152,7 @@ def main():
                     print("\n===== 모든 운동 완료! =====\n")
                 else:
                     checker = make_checker(nxt)     # 다음 체커 미리 준비
+                    recognizer.reset()               # 다음 운동 인식을 위해 시퀀스 버퍼 초기화
                     between_rest = True              # 운동 간 휴식 시작
                     between_rest_start = time.time()
                     print(f"\n----- 운동 간 휴식 {BETWEEN_EXERCISE_REST}s -----\n")
@@ -147,6 +166,7 @@ def main():
             break
         if key == ord('r'):
             checker.reset()
+            recognizer.reset()
 
     cap.release()
     cv2.destroyAllWindows()

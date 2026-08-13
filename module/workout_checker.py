@@ -10,7 +10,7 @@ Mediapipe 초기화·좌표 추출·기본 각도 함수는 동현님 프로젝�
 mediapipe_op / basic_fn 모듈을 재사용한다.
 
 TRTModel은 범용 TRT 추론 래퍼이고, ActionRecognizer가 이를 이용해
-30프레임 시퀀스(132차원 = 33 landmark x [x,y,z,visibility])로부터
+15프레임 시퀀스(132차원 = 33 landmark x [x,y,z,visibility])로부터
 현재 운동 종류(pushup/squat/lunge/noactions)를 예측한다.
 """
 
@@ -66,10 +66,12 @@ class TRTModel:
 # LSTM 기반 운동 종류 자동 인식 (ActionRecognizer)
 # 최근 SEQ_LEN 프레임의 키포인트 시퀀스를 모아 TRTModel(lstm.trt)로 추론한다.
 # =========================================================
-LSTM_ENGINE_PATH = "models/lstm.trt"   # 프로젝트 루트 기준 (동일 Jetson에서 빌드한 엔진)
+# Engine: LSTM
+# 15프레임 시퀀스로 재학습한 엔진 (기존 30프레임짜리보다 버퍼가 절반이라 반응이 더 빠름)
+LSTM_ENGINE_PATH = "models/lstm_15frame.trt"
 
 ACTIONS = np.array(["pushup", "squat", "lunge", "noactions"])
-SEQ_LEN = 30
+SEQ_LEN = 15
 NUM_FEATURES = 132   # 33 landmark x (x, y, z, visibility)
 
 
@@ -87,19 +89,29 @@ class ActionRecognizer:
     """
     매 프레임 update(landmarks)를 호출해 키포인트를 쌓다가,
     SEQ_LEN 프레임이 모이면 LSTM 엔진으로 운동 종류를 예측한다.
+
+    슬라이딩 윈도우 특성상 프레임마다 확률이 조금씩 흔들리는데, 클래스별 확률에
+    EMA(지수이동평균)를 적용해 그 흔들림을 눌러준다 (레퍼런스의 최근 10프레임
+    다수결과 같은 목적, EMA로 더 가볍게 구현).
     """
 
     def __init__(self, engine_path=LSTM_ENGINE_PATH, seq_len=SEQ_LEN,
-                 num_features=NUM_FEATURES, actions=ACTIONS, threshold=0.5):
+                 num_features=NUM_FEATURES, actions=ACTIONS, threshold=0.5,
+                 ema_alpha=1.0):
         self.model = TRTModel(engine_path)
         self.seq_len = seq_len
         self.num_features = num_features
         self.actions = actions
         self.threshold = threshold
+        # alpha=1.0 -> 스무딩 없음 (윈도우 레퍼런스와 동일하게 매 프레임 값 그대로 사용).
+        # 값을 낮추면(예: 0.3) 과거 프레임과 섞어서 흔들림을 눌러주는 대신 반응이 느려짐.
+        self.ema_alpha = ema_alpha
         self.sequence = []
+        self.ema_probs = None
 
     def reset(self):
         self.sequence = []
+        self.ema_probs = None
 
     def update(self, landmarks):
         """
@@ -114,8 +126,14 @@ class ActionRecognizer:
             return None
 
         probs = self.model.predict(np.array(self.sequence))   # (SEQ_LEN, NUM_FEATURES) -> (len(actions),)
-        idx = int(np.argmax(probs))
-        confidence = float(probs[idx])
+
+        if self.ema_probs is None:
+            self.ema_probs = probs
+        else:
+            self.ema_probs = self.ema_alpha * probs + (1 - self.ema_alpha) * self.ema_probs
+
+        idx = int(np.argmax(self.ema_probs))
+        confidence = float(self.ema_probs[idx])
         action_name = self.actions[idx] if confidence > self.threshold else "..."
         return action_name, confidence
 
@@ -281,12 +299,10 @@ class SquatChecker:
     name = "squat"
 
     STATE_STANDING = "STANDING"
-    STATE_DESCENDING = "DESCENDING"
     STATE_BOTTOM = "BOTTOM"
-    STATE_ASCENDING = "ASCENDING"
 
-    STANDING_THRESHOLD = 160
-    BOTTOM_THRESHOLD = 130
+    # 레퍼런스(FormFit)와 동일: 무릎각·고관절각 모두 좌우 동일 임계값(160)으로 왕복 판정
+    THRESHOLD = 160
 
     # 확실한 정상/오류 구간 (순수 규칙 판별 기준)
     KNEE_CLEAR_ERROR = 100    # 이 이상이면 확실히 깊이 부족
@@ -296,43 +312,12 @@ class SquatChecker:
     def __init__(self, target_reps=5, target_count=10, rest_seconds=30):
         self.session = ExerciseSession(target_reps, target_count, rest_seconds)
         self.current_state = self.STATE_STANDING
-        self.prev_knee_angle = 180
         self.bottom_snapshot_errors = []
 
     def reset(self):
         self.current_state = self.STATE_STANDING
-        self.prev_knee_angle = 180
         self.bottom_snapshot_errors = []
         self.session.reset()
-
-    def _update_state(self, knee_angle):
-        current_state = self.current_state
-        prev_knee_angle = self.prev_knee_angle
-
-        if knee_angle > self.STANDING_THRESHOLD:
-            return self.STATE_STANDING
-
-        if current_state == self.STATE_STANDING:
-            if knee_angle < prev_knee_angle:
-                return self.STATE_DESCENDING
-            return self.STATE_STANDING
-
-        if current_state == self.STATE_DESCENDING:
-            if knee_angle <= self.BOTTOM_THRESHOLD:
-                return self.STATE_BOTTOM
-            return self.STATE_DESCENDING
-
-        if current_state == self.STATE_BOTTOM:
-            if knee_angle > prev_knee_angle:
-                return self.STATE_ASCENDING
-            return self.STATE_BOTTOM
-
-        if current_state == self.STATE_ASCENDING:
-            if knee_angle > self.STANDING_THRESHOLD:
-                return self.STATE_STANDING
-            return self.STATE_ASCENDING
-
-        return current_state
 
     def _check_bottom_form(self, trunk_angle, knee_angle, hip_flex_angle):
         """
@@ -349,27 +334,6 @@ class SquatChecker:
 
         return errors
 
-    def _select_best_side(self, landmarks, w, h):
-        """
-        Select better side between left or right
-        """
-        l_shoulder, l_sv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER, w, h)
-        l_hip, l_hv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
-        l_knee, l_kv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_KNEE, w, h)
-        l_ankle, l_av = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ANKLE, w, h)
-        left_sum = l_sv + l_hv + l_kv + l_av
-
-        r_shoulder, r_sv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_SHOULDER, w, h)
-        r_hip, r_hv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
-        r_knee, r_kv = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_KNEE, w, h)
-        r_ankle, r_av = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ANKLE, w, h)
-        right_sum = r_sv + r_hv + r_kv + r_av
-
-        if left_sum >= right_sum:
-            return l_shoulder, l_hip, l_knee, l_ankle, min(l_sv, l_hv, l_kv, l_av), "left"
-        else:
-            return r_shoulder, r_hip, r_knee, r_ankle, min(r_sv, r_hv, r_kv, r_av), "right"
-
     def update(self, landmarks, w, h):
         # check if it is resting time
         self.session.update_rest()
@@ -382,38 +346,49 @@ class SquatChecker:
                 "done": self.session.done
             }
 
-        # ----- Extract coordinate & state transition -----
-        shoulder, hip, knee, ankle, min_vis, side_used = self._select_best_side(landmarks, w, h)
+        # ----- Extract both-side coordinates (레퍼런스처럼 좌우 모두 사용) -----
+        l_shoulder, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER, w, h)
+        l_hip, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
+        l_knee, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_KNEE, w, h)
+        l_ankle, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ANKLE, w, h)
 
-        if min_vis <= 0.5:
-            return None
+        r_shoulder, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_SHOULDER, w, h)
+        r_hip, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
+        r_knee, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_KNEE, w, h)
+        r_ankle, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ANKLE, w, h)
 
-        knee_angle = calculate_angle(hip, knee, ankle)
-        trunk_angle = calculate_trunk_angle(shoulder, hip)
-        hip_flex_angle = calculate_angle(shoulder, hip, knee)
+        left_knee_angle = calculate_angle(l_hip, l_knee, l_ankle)
+        right_knee_angle = calculate_angle(r_hip, r_knee, r_ankle)
+        left_hip_angle = calculate_angle(l_shoulder, l_hip, l_knee)
+        right_hip_angle = calculate_angle(r_shoulder, r_hip, r_knee)
 
         if not self.session.done:
-            new_state = self._update_state(knee_angle)
+            # 레퍼런스와 동일한 두 개의 독립된 조건문 (좌우 무릎각·고관절각 모두 만족해야 함)
+            went_down = (left_knee_angle < self.THRESHOLD and right_knee_angle < self.THRESHOLD
+                         and left_hip_angle < self.THRESHOLD and right_hip_angle < self.THRESHOLD)
+            came_up = (left_knee_angle > self.THRESHOLD and right_knee_angle > self.THRESHOLD
+                       and left_hip_angle > self.THRESHOLD and right_hip_angle > self.THRESHOLD)
 
-            if new_state != self.current_state:
-                print(f"[STATE CHANGE] {self.current_state} -> {new_state}  "
-                      f"(knee={int(knee_angle)}, side={side_used})")
+            if went_down and self.current_state != self.STATE_BOTTOM:
+                trunk_angle = calculate_trunk_angle(l_shoulder, l_hip)
+                self.bottom_snapshot_errors = self._check_bottom_form(
+                    trunk_angle, left_knee_angle, left_hip_angle)
+                self.current_state = self.STATE_BOTTOM
+                print(f"[STATE CHANGE] {self.STATE_STANDING} -> {self.STATE_BOTTOM}  "
+                      f"(knee L={int(left_knee_angle)} R={int(right_knee_angle)})")
 
-            move_done = (self.current_state == self.STATE_ASCENDING and new_state == self.STATE_STANDING)
-
-            self.current_state = new_state
-            self.prev_knee_angle = knee_angle
-
-            if self.current_state == self.STATE_BOTTOM:
-                self.bottom_snapshot_errors = self._check_bottom_form(trunk_angle, knee_angle, hip_flex_angle)
-
-            if move_done:
+            if came_up and self.current_state == self.STATE_BOTTOM:
+                self.current_state = self.STATE_STANDING
+                print(f"[STATE CHANGE] {self.STATE_BOTTOM} -> {self.STATE_STANDING}  "
+                      f"(knee L={int(left_knee_angle)} R={int(right_knee_angle)})")
                 self.session.record_count(self.bottom_snapshot_errors)
                 self.bottom_snapshot_errors = []
 
         return {
-            "points": {"knee": knee, "hip": hip},
-            "angles": {"knee": knee_angle, "hip": hip_flex_angle, "trunk": trunk_angle},
+            "points": {"knee": l_knee, "hip": l_hip},
+            "angles": {"left_knee": left_knee_angle, "right_knee": right_knee_angle,
+                       "left_hip": left_hip_angle, "right_hip": right_hip_angle},
+            "state": self.current_state,
         }
 
 
@@ -428,7 +403,7 @@ class PushupChecker:
     STATE_EXTENDED = "EXTENDED"   # 팔이 펴진 상태
     STATE_FLEXED = "FLEXED"       # 팔이 굽혀진 상태 (카운트 시점)
 
-    ELBOW_THRESHOLD = 160
+    ELBOW_THRESHOLD = 130
 
     SAGGING_THRESHOLD = 190   # 이보다 크면 엉덩이 처짐
     PIKING_THRESHOLD = 160    # 이보다 작으면 엉덩이 솟음
@@ -453,22 +428,17 @@ class PushupChecker:
                 "done": self.session.done
             }
 
-        l_shoulder, l_shoulder_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER, w, h)
-        l_elbow, l_elbow_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ELBOW, w, h)
-        l_wrist, l_wrist_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_WRIST, w, h)
-        l_hip, l_hip_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
-        l_knee, l_knee_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_KNEE, w, h)
+        l_shoulder, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER, w, h)
+        l_elbow, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ELBOW, w, h)
+        l_wrist, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_WRIST, w, h)
+        l_hip, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
+        l_knee, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_KNEE, w, h)
 
-        r_shoulder, r_shoulder_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_SHOULDER, w, h)
-        r_elbow, r_elbow_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ELBOW, w, h)
-        r_wrist, r_wrist_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_WRIST, w, h)
-        r_hip, r_hip_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
-        r_knee, r_knee_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_KNEE, w, h)
-
-        min_vis = min(l_shoulder_vis, l_elbow_vis, l_wrist_vis, l_hip_vis, l_knee_vis,
-                       r_shoulder_vis, r_elbow_vis, r_wrist_vis, r_hip_vis, r_knee_vis)
-        if min_vis <= 0.5:
-            return None
+        r_shoulder, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_SHOULDER, w, h)
+        r_elbow, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ELBOW, w, h)
+        r_wrist, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_WRIST, w, h)
+        r_hip, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
+        r_knee, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_KNEE, w, h)
 
         left_elbow_angle = calculate_angle(l_shoulder, l_elbow, l_wrist)
         right_elbow_angle = calculate_angle(r_shoulder, r_elbow, r_wrist)
@@ -500,14 +470,19 @@ class PushupChecker:
 
         return {
             "points": {"elbow": l_elbow, "hip": l_hip},
-            "angles": {"elbow": left_elbow_angle, "body": left_body_angle},
+            "angles": {
+                "left_elbow": left_elbow_angle, "right_elbow": right_elbow_angle,
+                "left_body": left_body_angle, "right_body": right_body_angle,
+            },
+            "state": self.current_state,
         }
 
 
 # -----------------------------
 # 런지 판별 로직 (LungeChecker)
 # FormFit 원작자 로직(count_reps_and_feedback의 'lunge' 분기) 이식.
-# front=left, back=right 고정 (원작자 코드와 동일한 전제).
+# 원작은 front=left, back=right로 고정이었으나, 어느 쪽 다리로 내딛어도 잡히도록
+# 매 프레임 더 굽혀진(각도가 작은) 쪽을 앞다리로 판단하는 방식으로 바꿨다.
 # -----------------------------
 class LungeChecker:
     name = "lunge"
@@ -546,21 +521,24 @@ class LungeChecker:
                 "done": self.session.done
             }
 
-        front_shoulder, fs_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER, w, h)
-        front_hip, fh_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
-        front_knee, fk_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_KNEE, w, h)
-        front_ankle, fa_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ANKLE, w, h)
+        l_hip, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_HIP, w, h)
+        l_knee, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_KNEE, w, h)
+        l_ankle, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.LEFT_ANKLE, w, h)
 
-        back_hip, bh_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
-        back_knee, bk_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_KNEE, w, h)
-        back_ankle, ba_vis = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ANKLE, w, h)
+        r_hip, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_HIP, w, h)
+        r_knee, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_KNEE, w, h)
+        r_ankle, _ = get_landmark_xy(landmarks, mp_pose.PoseLandmark.RIGHT_ANKLE, w, h)
 
-        min_vis = min(fs_vis, fh_vis, fk_vis, fa_vis, bh_vis, bk_vis, ba_vis)
-        if min_vis <= 0.5:
-            return None
+        left_knee_angle = calculate_angle(l_hip, l_knee, l_ankle)
+        right_knee_angle = calculate_angle(r_hip, r_knee, r_ankle)
 
-        front_knee_angle = calculate_angle(front_hip, front_knee, front_ankle)
-        back_knee_angle = calculate_angle(back_hip, back_knee, back_ankle)
+        # 더 굽혀진(각도가 작은) 쪽이 앞다리 — 왼쪽/오른쪽 어느 쪽으로 내딛어도 대응
+        if left_knee_angle <= right_knee_angle:
+            front_knee, front_hip = l_knee, l_hip
+            front_knee_angle, back_knee_angle = left_knee_angle, right_knee_angle
+        else:
+            front_knee, front_hip = r_knee, r_hip
+            front_knee_angle, back_knee_angle = right_knee_angle, left_knee_angle
 
         if not self.session.done:
             rep_just_completed = False
@@ -581,6 +559,7 @@ class LungeChecker:
         return {
             "points": {"knee": front_knee, "hip": front_hip},
             "angles": {"front_knee": front_knee_angle, "back_knee": back_knee_angle},
+            "state": self.current_state,
         }
 
 

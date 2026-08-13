@@ -67,11 +67,13 @@ class TRTModel:
 # 최근 SEQ_LEN 프레임의 키포인트 시퀀스를 모아 TRTModel(lstm.trt)로 추론한다.
 # =========================================================
 # Engine: LSTM
-# 15프레임 시퀀스로 재학습한 엔진 (기존 30프레임짜리보다 버퍼가 절반이라 반응이 더 빠름)
-LSTM_ENGINE_PATH = "models/lstm_15frame.trt"
+# 10프레임 시퀀스로 학습한 엔진
+# - 기존 30프레임보다 버퍼가 1/3이라 더 빠르게 반응이 가능
+# - Jetson은 frame이 부족하여 이러한 모델이 더 정확한 판단 가능
+LSTM_ENGINE_PATH = "models/lstm_10frame.trt"
 
 ACTIONS = np.array(["pushup", "squat", "lunge", "noactions"])
-SEQ_LEN = 15
+SEQ_LEN = 10
 NUM_FEATURES = 132   # 33 landmark x (x, y, z, visibility)
 
 
@@ -97,7 +99,7 @@ class ActionRecognizer:
 
     def __init__(self, engine_path=LSTM_ENGINE_PATH, seq_len=SEQ_LEN,
                  num_features=NUM_FEATURES, actions=ACTIONS, threshold=0.5,
-                 ema_alpha=1.0):
+                 ema_alpha=0.5):
         self.model = TRTModel(engine_path)
         self.seq_len = seq_len
         self.num_features = num_features
@@ -136,6 +138,34 @@ class ActionRecognizer:
         confidence = float(self.ema_probs[idx])
         action_name = self.actions[idx] if confidence > self.threshold else "..."
         return action_name, confidence
+
+
+def update_with_recognition(recognizer, checker, landmarks, w, h):
+    """
+    ActionRecognizer + Checker를 묶어 한 프레임을 처리하는 공용 헬퍼.
+    LSTM이 인식한 운동이 checker.name과 같을 때만 checker.update()를 호출한다
+    (test_sel_checker.py에서 검증된 것과 동일한 방식). GUI 등 다른 소비자가
+    "인식 -> 일치할 때만 카운트" 흐름을 매번 새로 구현하지 않고 재사용할 수 있다.
+
+    반환: (recognized_action, confidence, check_result)
+      - landmarks가 None이면 셋 다 None.
+      - 시퀀스 버퍼가 덜 찼으면 recognized_action/confidence가 None.
+      - 인식된 운동이 checker.name과 다르면 check_result가 None
+        (이 프레임은 카운트되지 않았다는 뜻).
+    """
+    if landmarks is None:
+        return None, None, None
+
+    recognized_action, confidence = None, None
+    action_result = recognizer.update(landmarks)
+    if action_result is not None:
+        recognized_action, confidence = action_result
+
+    check_result = None
+    if recognized_action == checker.name:
+        check_result = checker.update(landmarks, w, h)
+
+    return recognized_action, confidence, check_result
 
 
 # =========================================================
@@ -233,6 +263,7 @@ class ExerciseSession:
             return
 
         self.count += 1
+        self.last_rep_errors = list(errors)
 
         if errors:
             for err in errors:
@@ -411,11 +442,9 @@ class PushupChecker:
     def __init__(self, target_reps=5, target_count=10, rest_seconds=30):
         self.session = ExerciseSession(target_reps, target_count, rest_seconds)
         self.current_state = None
-        self.last_rep_errors = []
 
     def reset(self):
         self.current_state = None
-        self.last_rep_errors = []
         self.session.reset()
 
     def update(self, landmarks, w, h):
@@ -463,8 +492,6 @@ class PushupChecker:
             if left_body_angle < self.PIKING_THRESHOLD or right_body_angle < self.PIKING_THRESHOLD:
                 errors.append("Lower hips to straight line")
 
-            self.last_rep_errors = errors
-
             if rep_just_completed:
                 self.session.record_count(errors)
 
@@ -490,18 +517,16 @@ class LungeChecker:
     STATE_UP = "UP"
     STATE_DOWN = "DOWN"
 
-    KNEE_THRESHOLD = 140
+    KNEE_THRESHOLD     = 140
     SHALLOW_KNEE_ANGLE = 110    # front_knee_angle이 이보다 크면 얕은 런지로 판단
 
     def __init__(self, target_reps=5, target_count=10, rest_seconds=30):
         self.session = ExerciseSession(target_reps, target_count, rest_seconds)
         self.current_state = None
-        self.last_rep_errors = []
         self.bottom_snapshot_errors = []
 
     def reset(self):
         self.current_state = None
-        self.last_rep_errors = []
         self.bottom_snapshot_errors = []
         self.session.reset()
 
@@ -543,7 +568,7 @@ class LungeChecker:
         if not self.session.done:
             rep_just_completed = False
 
-            if front_knee_angle < self.KNEE_THRESHOLD and back_knee_angle > self.KNEE_THRESHOLD:
+            if front_knee_angle < self.KNEE_THRESHOLD and back_knee_angle < self.KNEE_THRESHOLD:
                 self.current_state = self.STATE_DOWN
                 self.bottom_snapshot_errors = self._check_form(front_knee_angle)
 
@@ -552,7 +577,6 @@ class LungeChecker:
                 rep_just_completed = True
 
             if rep_just_completed:
-                self.last_rep_errors = self.bottom_snapshot_errors
                 self.session.record_count(self.bottom_snapshot_errors)
                 self.bottom_snapshot_errors = []
 

@@ -125,6 +125,14 @@ def calculate_all_features(landmarks, width, height, vis_th=0.5):
     """
     points, vis = create_pose_points(landmarks)
 
+    # Pelvic tilt 계산 검증용 임시 출력
+    print(
+        "[PELVIC DEBUG]",
+        "shoulder =", points.get("right_shoulder"),
+        "hip =", points.get("right_hip"),
+        "knee =", points.get("right_knee"),
+    )
+
     def ok(*names):
         """지정한 관절들이 모두 신뢰 가능한지."""
         return all(vis.get(n, 1.0) >= vis_th for n in names)
@@ -189,21 +197,20 @@ def calculate_all_features(landmarks, width, height, vis_th=0.5):
             ),
         ),
 
-
-    "thoracic_kyphosis_deg": safe(
-    ok(
-        "right_ear",
-        "right_shoulder",
-        "right_hip",
-    ),
-    lambda: calculate_thoracic_kyphosis(
-        points["right_ear"],
-        points["right_shoulder"],
-        points["right_hip"],
-        width,
-        height,
-    ),
-),
+        "thoracic_kyphosis_deg": safe(
+            ok(
+                "right_ear",
+                "right_shoulder",
+                "right_hip",
+            ),
+            lambda: calculate_thoracic_kyphosis(
+                points["right_ear"],
+                points["right_shoulder"],
+                points["right_hip"],
+                width,
+                height,
+            ),
+        ),
 
         # ===== 하체 지표 =====
         "pelvic_tilt_ant_deg": safe(

@@ -4,76 +4,67 @@ import math
 # ========================================================
 # +. FHA
 # ========================================================
-def calculate_fha(neck_center, head, width, height):
-    neck_x = neck_center[0] * width
-    neck_y = neck_center[1] * height
+def calculate_fha(ear, shoulder, hip, width=None, height=None):
+    """EAR-SHOULDER vector angle relative to HIP-SHOULDER trunk vector."""
 
-    head_x = head[0] * width
-    head_y = head[1] * height
+    ear_x = float(ear[0])
+    ear_y = float(ear[1])
 
-    dx = abs(head_x - neck_x)
-    dy = neck_y - head_y
+    shoulder_x = float(shoulder[0])
+    shoulder_y = float(shoulder[1])
 
-    if dx < 1e-6 and abs(dy) < 1e-6:
+    hip_x = float(hip[0])
+    hip_y = float(hip[1])
+
+    # normalized coordinates -> pixel coordinates
+    if width is not None and height is not None:
+        ear_x *= width
+        ear_y *= height
+
+        shoulder_x *= width
+        shoulder_y *= height
+
+        hip_x *= width
+        hip_y *= height
+
+    # Hip -> Shoulder : 몸통 기준 벡터
+    trunk_x = shoulder_x - hip_x
+    trunk_y = shoulder_y - hip_y
+
+    # Shoulder -> Ear : 머리 방향 벡터
+    head_x = ear_x - shoulder_x
+    head_y = ear_y - shoulder_y
+
+    trunk_norm = math.hypot(trunk_x, trunk_y)
+    head_norm = math.hypot(head_x, head_y)
+
+    if trunk_norm < 1e-6 or head_norm < 1e-6:
         return None
 
-    if dy <= 0:
-        return None
+    # 두 벡터의 내적
+    dot = trunk_x * head_x + trunk_y * head_y
 
-    return float(math.degrees(math.atan2(dy, dx)))
+    cos_theta = dot / (trunk_norm * head_norm)
+
+    # 부동소수점 오차 방지
+    cos_theta = max(-1.0, min(1.0, cos_theta))
+
+    return float(math.degrees(math.acos(cos_theta)))
 
 
 def classify_fha(fha_deg):
     if fha_deg is None:
         return "measurement_failed"
-        
 
-    if 50.0 <= fha_deg <= 60.0:
-        return "normal"
+    if fha_deg < 32.0:
+        return "RULE_NORMAL"
 
-    if 45.0 <= fha_deg < 50.0:
-        return "mild"
+    if fha_deg < 36.0:
+        return "RULE_BORDERLINE"
 
-    if 40.0 <= fha_deg < 45.0:
-        return "moderate"
+    return "RULE_ABNORMAL"
 
-    if fha_deg < 40.0:
-        return "severe"
 
-    # 60도를 초과한 경우
-    return "out_of_range"
-# ========================================================
-# +.FSA 
-# ========================================================
-
-def calculate_fsa(neck_center, shoulder, width, height):
-
-    # pixcel convertion real number
-    neck_x = float(neck_center[0] * width)
-    neck_y = float(neck_center[1] * height)
-
-    shoulder_x = float(shoulder[0] * width)
-    shoulder_y = float(shoulder[1] * height)
-
-    dx = abs(shoulder_x - neck_x)
-    dy = shoulder_y - neck_y
-
-    if dx < 1e-6 and abs(dy) < 1e-6:
-        return None
-
-    if dy <= 0:
-        return None
-
-    return float(math.degrees(math.atan2(dx, dy)))
-
-def classify_fsa(fsa_deg):
-    if fsa_deg is None:
-        return "measurement_failed"
-
-    if fsa_deg >= 52.0:
-        return "abnormal"
-
-    return "normal"
      
 #shoulder tilt angle
 def calculate_shoulder_tilt(left_shoulder, right_shoulder, width, height):
@@ -111,7 +102,6 @@ def calculate_thoracic_kyphosis(
     width,
     height,
 ):
-    # soulder to heap midpoint
     hs_midpoint = (shoulder + hip) / 2.0
 
     head_x = float(head[0] * width)
@@ -136,10 +126,10 @@ def classify_thoracic_kyphosis(angle):
     if angle is None:
         return "measurement_failed"
 
-    if angle > 40.0:
-        return "abnormal"
-
-    if 20.0 <= angle <= 40.0:
+    if angle >= 80.0:
         return "normal"
 
-    return "out_of_range"
+    if angle >= 70.0:
+        return "borderline"
+
+    return "abnormal"

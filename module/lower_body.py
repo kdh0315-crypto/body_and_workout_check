@@ -26,29 +26,16 @@ def calculate_vector_angle(vector_a, vector_b):
 
 
 def calculate_pelvic_tilt_ant(
-    left_shoulder,
     right_shoulder,
-    left_hip,
     right_hip,
-    left_knee,
     right_knee,
     width,
     height,
 ):
     # normalized coordinate -> pixel coordinate
-    left_shoulder_px = np.array([
-        left_shoulder[0] * width,
-        left_shoulder[1] * height,
-    ], dtype=np.float32)
-
     right_shoulder_px = np.array([
         right_shoulder[0] * width,
         right_shoulder[1] * height,
-    ], dtype=np.float32)
-
-    left_hip_px = np.array([
-        left_hip[0] * width,
-        left_hip[1] * height,
     ], dtype=np.float32)
 
     right_hip_px = np.array([
@@ -56,35 +43,14 @@ def calculate_pelvic_tilt_ant(
         right_hip[1] * height,
     ], dtype=np.float32)
 
-    left_knee_px = np.array([
-        left_knee[0] * width,
-        left_knee[1] * height,
-    ], dtype=np.float32)
-
     right_knee_px = np.array([
         right_knee[0] * width,
         right_knee[1] * height,
     ], dtype=np.float32)
 
-    # center points
-    shoulder_center = midpoint2D(
-        left_shoulder_px,
-        right_shoulder_px,
-    )
-
-    hip_center = midpoint2D(
-        left_hip_px,
-        right_hip_px,
-    )
-
-    knee_center = midpoint2D(
-        left_knee_px,
-        right_knee_px,
-    )
-
     # hip as vertex
-    hip_to_shoulder = shoulder_center - hip_center
-    hip_to_knee = knee_center - hip_center
+    hip_to_shoulder = right_shoulder_px - right_hip_px
+    hip_to_knee = right_knee_px - right_hip_px
 
     internal_angle = calculate_vector_angle(
         hip_to_shoulder,
@@ -102,7 +68,7 @@ def classify_pelvic_tilt_ant(angle):
     if angle is None:
         return "measurement_failed"
 
-    if 8.0 <= angle <= 18.0:
+    if angle <= 18.0:
         return "normal"
 
     return "abnormal"
@@ -150,5 +116,3 @@ def calculate_knee_valgus_angle(
 
     # 일직선 정렬 = 0 deg
     return float(180.0 - internal_angle)
-
-   

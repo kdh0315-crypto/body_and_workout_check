@@ -1,42 +1,23 @@
 import sys
-import time
-
 import cv2
+from PySide6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QPushButton
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtCore import QThread, Signal, QTimer, Qt
+from PySide6.QtWidgets import QProgressBar, QTextEdit
+
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
-    QSpinBox, QComboBox, QGroupBox, QRadioButton, QButtonGroup,
-    QProgressBar, QTextEdit,
+    QSpinBox, QComboBox, QGroupBox, QRadioButton, QButtonGroup
 )
 
-from module.mediapipe_op import *      # CaptureForm, save_with_pose, has_landmarks, extract_landmarks_video, draw_skeleton
+from module.mediapipe_op import *      # CaptureForm, save_with_pose 등
 from module.workout_sel import *
 from module.cal_angle import *
 from module.ollama_op import *
 from module.workout_checker import get_exercise_checker
 
+
 from gui.gui_style import *
-
-
-# =====================================================
-# features(cal_angle 키) -> REF_RANGES 키로 변환
-# (cal_angle.py 에 이미 있다면 이 함수는 지우고 import 해서 쓸 것)
-# =====================================================
-def features_to_metrics(front_features, side_features):
-    def avg(a, b):
-        vals = [v for v in (a, b) if v is not None]
-        return sum(vals) / len(vals) if vals else None
-
-    metrics = {
-        "shoulder_tilt":     front_features.get("shoulder_tilt_deg"),
-        "knee_valgus":       avg(front_features.get("left_knee_valgus_deg"),
-                                 front_features.get("right_knee_valgus_deg")),
-        "forward_head":      side_features.get("fha_deg"),
-        "round_shoulder":    side_features.get("fsa_deg"),
-        "thoracic_kyphosis": side_features.get("thoracic_kyphosis_deg"),
-    }
-    return {k: v for k, v in metrics.items() if v is not None}
 
 
 class LLMWorker(QThread):
@@ -52,10 +33,8 @@ class LLMWorker(QThread):
     def run(self):
         abnormal = find_abnormal(self.metrics)
 
-        # 호출 1: 스트레칭 (표시 전용)
         stretches = recommend_stretches(abnormal)
 
-        # 호출 2: 운동 처방 (workout_sel 형식)
         goal = self.user_info.get("goal", "posture")
         level = self.user_info.get("level", "beginner")
         workout = prescribe_workouts(goal, level)
@@ -74,87 +53,82 @@ class LoadingOverlay(QWidget):
     """화면 위에 덮는 로딩 표시."""
     def __init__(self, parent):
         super().__init__(parent)
-        self.setStyleSheet("background-color: rgba(30, 30, 46, 255);")  # 불투명 - 카메라 가림
+        self.setStyleSheet("background-color: rgba(13, 17, 23, 235);")
 
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(16)
 
         self.label = QLabel("자세 분석 중...\n잠시만 기다려주세요")
         self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet("color: #cdd6f4; font-size: 18px; font-weight: bold;")
+        self.label.setStyleSheet(
+            "color: #e6edf3; font-size: 18px; font-weight: 800; background: transparent;"
+        )
         layout.addWidget(self.label)
 
         bar = QProgressBar()
         bar.setRange(0, 0)
-        bar.setFixedWidth(200)
+        bar.setFixedWidth(240)
         layout.addWidget(bar, alignment=Qt.AlignCenter)
 
         self.setLayout(layout)
 
     def resizeEvent(self, event):
-        if self.parent():
-            self.resize(self.parent().size())
+        self.resize(self.parent().size())
 
 
 class CameraView(QWidget):
-    REST_BETWEEN_EXERCISES = 10   # 운동 간 휴식(초)
-
     def __init__(self, user_info: dict):
         super().__init__()
-        self.setWindowTitle("자세 촬영 & 운동")
+        self.setWindowTitle("자세 촬영")
+        self.setMinimumWidth(560)
         self.user_info = user_info
         self.cap_form = CaptureForm()
 
-        # 상태: "capture" -> "analyzing" -> "result" -> "exercise" -> "done"
-        self.state = "capture"
-
-        # 실시간 운동용
-        self.selector = None
-        self.checker = None
-        self.between_rest = False
-        self.between_rest_start = None
-        self._last_rep_count = 0     # 세트 완료 감지용
-
-        # VIDEO 타임스탬프
-        self.ts_start = time.perf_counter()
-        self.prev_ts = -1
-
         layout = QVBoxLayout()
+        layout.setContentsMargins(28, 26, 28, 26)
+        layout.setSpacing(10)
 
-        self.video_label = QLabel("카메라 준비 중...")
-        self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setMinimumSize(640, 480)
-        layout.addWidget(self.video_label)
+        title = QLabel("자세 촬영")
+        title.setObjectName("title")
+        layout.addWidget(title)
 
         self.status_label = QLabel("정면 자세를 잡고 '촬영' 버튼을 누르세요")
+        self.status_label.setObjectName("subtitle")
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setWordWrap(True)      # 여러 줄 표시 허용
         layout.addWidget(self.status_label)
 
-        # 세트/폼 피드백 로그
-        self.feedback_label = QLabel("")
-        self.feedback_label.setAlignment(Qt.AlignCenter)
-        self.feedback_label.setWordWrap(True)
-        self.feedback_label.hide()
-        layout.addWidget(self.feedback_label)
+        video_card = QWidget()
+        video_card.setObjectName("cardFlat")
+        video_card_layout = QVBoxLayout()
+        video_card_layout.setContentsMargins(14, 14, 14, 14)
+
+        self.video_label = QLabel("카메라 준비 중...")
+        self.video_label.setObjectName("video")
+        self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.setMinimumSize(640, 480)
+        video_card_layout.addWidget(self.video_label)
+
+        video_card.setLayout(video_card_layout)
+        layout.addWidget(video_card)
 
         self.result_view = QTextEdit()
+        self.result_view.setObjectName("resultView")
         self.result_view.setReadOnly(True)
         self.result_view.setMinimumHeight(200)
         self.result_view.hide()
         layout.addWidget(self.result_view)
 
-        # 버튼 두 개: 촬영 / 운동 시작
-        btn_row = QHBoxLayout()
-        self.capture_btn = QPushButton("촬영")
+        self.capture_btn = QPushButton("촬영하기")
+        self.capture_btn.setObjectName("primary")
         self.capture_btn.clicked.connect(self.on_capture)
-        btn_row.addWidget(self.capture_btn)
+        layout.addWidget(self.capture_btn)
 
-        self.start_btn = QPushButton("운동 시작")
-        self.start_btn.clicked.connect(self.start_exercise)
-        self.start_btn.hide()
-        btn_row.addWidget(self.start_btn)
-        layout.addLayout(btn_row)
+        self.start_workout_btn = QPushButton("운동 시작하기")
+        self.start_workout_btn.setObjectName("primary")
+        self.start_workout_btn.clicked.connect(self.on_start_workout)
+        self.start_workout_btn.hide()
+        layout.addWidget(self.start_workout_btn)
 
         self.setLayout(layout)
 
@@ -166,35 +140,26 @@ class CameraView(QWidget):
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(30)
 
-    # ---------- 타임스탬프 ----------
-    def _next_ts(self):
-        ts = int((time.perf_counter() - self.ts_start) * 1000)
-        if ts <= self.prev_ts:
-            ts = self.prev_ts + 1
-        self.prev_ts = ts
-        return ts
+        self.selector = None
 
-    # ---------- 카메라 루프 ----------
     def update_frame(self):
         ret, frame = self.cap.read()
         if not ret:
             return
+
         frame = cv2.flip(frame, 1)
         self.current_frame = frame
-        h, w, _ = frame.shape
 
-        display = frame
-        if self.state == "exercise":
-            display = self._run_exercise(frame, w, h)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimg).scaled(
+            self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.video_label.setPixmap(pixmap)
 
-        rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
-        hh, ww, ch = rgb.shape
-        qimg = QImage(rgb.data, ww, hh, ch * ww, QImage.Format_RGB888)
-        self.video_label.setPixmap(QPixmap.fromImage(qimg))
-
-    # ---------- 촬영 ----------
     def on_capture(self):
-        if self.current_frame is None or self.state != "capture":
+        if self.current_frame is None:
             return
 
         self.cap_form.key_released = True
@@ -203,22 +168,25 @@ class CameraView(QWidget):
         if not self.cap_form.front_img_en:
             self.status_label.setText("정면 자세를 잡고 '촬영'을 누르세요")
         elif not self.cap_form.side_img_en:
-            self.status_label.setText("측면(왼쪽) 자세를 잡고 '촬영'을 누르세요")
+            self.status_label.setText("측면 자세를 잡고 '촬영'을 누르세요")
 
         if result is not None:
             front_img, side_img = result
             self.status_label.setText("촬영 완료 — 분석 중...")
             cv2.imwrite("front_raw.jpg", front_img)
             cv2.imwrite("side_raw.jpg", side_img)
+            self.timer.stop()
             self.on_capture_done(front_img, side_img)
 
     def on_capture_done(self, front_img, side_img):
-        self.state = "analyzing"
+        print("촬영 완료. user_info:", self.user_info)
+
         self.timer.stop()
         self.video_label.clear()
+        self.video_label.setText("")
 
         front_results = save_with_pose(front_img, "front_pose.jpg")
-        side_results  = save_with_pose(side_img,  "side_pose.jpg")
+        side_results = save_with_pose(side_img, "side_pose.jpg")
 
         if not has_landmarks(front_results) or not has_landmarks(side_results):
             self.status_label.setText("포즈 감지 실패 — 다시 촬영")
@@ -228,7 +196,12 @@ class CameraView(QWidget):
         fh, fw = front_img.shape[:2]
         sh, sw = side_img.shape[:2]
         front_features = calculate_all_features(front_results.pose_landmarks[0], fw, fh)
-        side_features  = calculate_all_features(side_results.pose_landmarks[0], sw, sh)
+        side_features = calculate_all_features(side_results.pose_landmarks[0], sw, sh)
+
+        print("FHA Rule:", side_features.get("fha_deg"), "/", classify_fha(side_features.get("fha_deg")))
+        print("front_features:", front_features)
+        print("side_features:", side_features)
+
         metrics = features_to_metrics(front_features, side_features)
         print("metrics:", metrics)
 
@@ -241,181 +214,265 @@ class CameraView(QWidget):
         self.worker.failed.connect(self.on_llm_failed)
         self.worker.start()
 
-    # ---------- LLM 결과 ----------
     def on_llm_done(self, data):
         self.overlay.hide()
-        self.state = "result"
-        self.capture_btn.hide()
         self.video_label.hide()
+        self.capture_btn.hide()
         self.result_view.show()
 
         stretches = data.get("stretches", [])
         workout = data.get("workout", {"recommendations": []})
-        recs = sorted(workout.get("recommendations", []),
-                      key=lambda x: x.get("priority", 99))
+        recs = workout.get("recommendations", [])
 
         self._concatenate_text(stretches, recs)
 
-        # 운동 선택기에 로드
         self.selector = workout_sel()
         self.selector.load_workout(workout)
+
+        if recs:
+            self.start_workout_btn.show()
+
         print("스트레칭:", stretches)
         print("운동:", recs)
-
-        # 운동 시작 버튼 노출
-        self.status_label.setText("운동을 시작하려면 '운동 시작'을 누르세요")
-        self.start_btn.show()
 
     def on_llm_failed(self, message):
         self.overlay.hide()
         self.status_label.setText(message)
         print("LLM 실패:", message)
-        self._restart()
+
+    def on_start_workout(self):
+        """운동 시작 버튼 콜백 — 카메라 정리 후 WorkoutView로 전환."""
+        if self.selector is None:
+            return
+
+        self.cap.release()
+        self.workout_view = WorkoutView(self.selector)
+        self.workout_view.show()
+        self.close()
 
     def _concatenate_text(self, stretches, recs):
-        lines = ["〈 추천 스트레칭 〉"]
+        lines = []
+
+        lines.append("STRETCHES")
         if stretches:
             for s in stretches:
-                lines.append(f"· {s.get('name')} — {s.get('reason')}")
+                lines.append(f"  ·  {s.get('name')}  —  {s.get('reason')}")
         else:
-            lines.append("· (없음)")
+            lines.append("  ·  (없음)")
 
         lines.append("")
-        lines.append("〈 오늘의 운동 〉")
+        lines.append("TODAY'S WORKOUT")
         if recs:
             for r in recs:
-                lines.append(
-                    f"{r.get('priority')}. {r.get('exercise')} "
-                    f"— {r.get('count')}{r.get('unit')} × {r.get('sets')}세트 "
-                    f"(휴식 {r.get('rest_seconds', 30)}초)  ({r.get('reason')})"
-                )
+                cnt = r.get("count")
+                unit = r.get("unit")
+                sets = r.get("sets")
+                lines.append(f"  {r.get('priority')}.  {r.get('exercise')}")
+                lines.append(f"      {cnt}{unit} x {sets} sets")
+                lines.append(f"      {r.get('reason')}")
+                lines.append("")
         else:
-            lines.append("· (없음)")
+            lines.append("  ·  (없음)")
 
         self.result_view.setText("\n".join(lines))
 
-    # ---------- 실시간 운동 ----------
-    def start_exercise(self):
-        if self.selector is None:
-            return
-        current = self.selector.current_workout()
-        if current is None:
-            self._all_done()
-            return
-
-        self.checker = self._make_checker(current)
-        self._last_rep_count = 0
-        self.state = "exercise"
-        self.result_view.hide()
-        self.start_btn.hide()
-        self.video_label.show()
-        self.feedback_label.show()
-        self.feedback_label.setText("")
-        self.status_label.setText(f"{current['exercise']} 시작")
-
+    def _restart(self):
+        self.cap_form = CaptureForm()
+        self.status_label.setText("정면 자세를 잡고 '촬영'을 누르세요")
         if not self.timer.isActive():
             self.timer.start(30)
 
-    def _make_checker(self, item):
-        return get_exercise_checker(
+    def closeEvent(self, event):
+        if self.cap.isOpened():
+            self.cap.release()
+        event.accept()
+
+
+class WorkoutView(QWidget):
+    """
+    workout_sel이 관리하는 운동 목록을 순서대로 진행하는 실행 화면.
+    카메라 프레임을 workout_checker(get_exercise_checker)에 넘겨
+    rep 카운트 + 자세 피드백을 실시간으로 표시한다.
+
+    LSTM(운동 자동 인식) 연결 전이라, 지금은 workout_sel이 알려주는
+    운동을 순서대로 수동 진행하는 방식으로 동작한다.
+    """
+
+    def __init__(self, selector: "workout_sel"):
+        super().__init__()
+        self.setWindowTitle("운동 진행")
+        self.setMinimumWidth(560)
+        self.selector = selector
+        self.checker = None
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(28, 26, 28, 26)
+        layout.setSpacing(10)
+
+        title = QLabel("운동 진행")
+        title.setObjectName("title")
+        layout.addWidget(title)
+
+        video_card = QWidget()
+        video_card.setObjectName("cardFlat")
+        video_card_layout = QVBoxLayout()
+        video_card_layout.setContentsMargins(14, 14, 14, 14)
+
+        self.video_label = QLabel("카메라 준비 중...")
+        self.video_label.setObjectName("video")
+        self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.setMinimumSize(640, 440)
+        video_card_layout.addWidget(self.video_label)
+        video_card.setLayout(video_card_layout)
+        layout.addWidget(video_card)
+
+        info_layout = QHBoxLayout()
+        info_layout.setContentsMargins(4, 18, 4, 18)
+        
+        name_col = QVBoxLayout()
+        self.exercise_label = QLabel("-")
+        self.exercise_label.setObjectName("exerciseName")
+        name_col.addWidget(self.exercise_label)
+        
+        self.set_label = QLabel("세트 -/-")
+        self.set_label.setObjectName("caption")
+        name_col.addWidget(self.set_label)
+        
+        info_layout.addLayout(name_col)
+        info_layout.addStretch()
+        
+        metric_col = QVBoxLayout()
+        metric_col.setAlignment(Qt.AlignRight)
+        self.count_label = QLabel("0")
+        self.count_label.setObjectName("bigMetric")
+        self.count_label.setAlignment(Qt.AlignRight)
+        metric_col.addWidget(self.count_label)
+        
+        self.count_unit_label = QLabel("/ 10 reps")
+        self.count_unit_label.setObjectName("metricUnit")
+        self.count_unit_label.setAlignment(Qt.AlignRight)
+        metric_col.addWidget(self.count_unit_label)
+        
+        info_layout.addLayout(metric_col)
+        layout.addLayout(info_layout)   
+
+        self.feedback_label = QLabel("자세를 잡고 운동을 시작하세요")
+        self.feedback_label.setObjectName("feedbackGood")
+        self.feedback_label.setAlignment(Qt.AlignCenter)
+        self.feedback_label.setWordWrap(True)
+        layout.addWidget(self.feedback_label)
+
+        self.stop_btn = QPushButton("운동 종료")
+        self.stop_btn.setObjectName("danger")
+        self.stop_btn.clicked.connect(self.on_stop)
+        layout.addWidget(self.stop_btn)
+
+        self.setLayout(layout)
+
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(30)
+
+        self._load_next_exercise()
+
+    def _load_next_exercise(self, work_done: bool = False):
+        """workout_sel에서 다음 운동을 받아와 checker를 새로 생성."""
+        item = self.selector.next_workout(work_done) if work_done else self.selector.current_workout()
+
+        if item is None:
+            self._show_all_done()
+            return
+
+        self.checker = get_exercise_checker(
             item["exercise"],
             target_reps=item.get("sets", 1),
             target_count=item.get("count", 10),
             rest_seconds=item.get("rest_seconds", 30),
         )
+        self.exercise_label.setText(item["exercise"].upper())
+        self.set_label.setText(f"세트 1/{item.get('sets', 1)}")
+        self.count_unit_label.setText(f"/ {item.get('count', 10)} reps")
+        self.feedback_label.setText("자세를 잡고 운동을 시작하세요")
+        self.feedback_label.setObjectName("feedbackGood")
+        self.feedback_label.setStyleSheet("")
 
-    def _run_exercise(self, frame, w, h):
-        # ----- 운동 간 휴식 -----
-        if self.between_rest:
-            remaining = self.REST_BETWEEN_EXERCISES - (time.time() - self.between_rest_start)
-            if remaining <= 0:
-                self.between_rest = False
-                self.status_label.setText(f"{self.checker.name} 시작")
-            else:
-                self.status_label.setText(f"다음 운동까지 {remaining:.0f}초")
-            return frame
+    def _show_all_done(self):
+        self.timer.stop()
+        if self.cap.isOpened():
+            self.cap.release()
+        self.video_label.setText("모든 운동을 완료했습니다!")
+        self.exercise_label.setText("완료")
+        self.count_label.setText("✓")
+        self.count_unit_label.setText("")
+        self.feedback_label.setText("수고하셨습니다. 오늘의 운동을 모두 마쳤어요.")
+        self.feedback_label.setObjectName("feedbackGood")
 
-        # ----- 실시간 판별 -----
-        ts = self._next_ts()
-        results = extract_landmarks_video(frame, ts)
+    def update_frame(self):
+        ret, frame = self.cap.read()
+        if not ret or self.checker is None:
+            return
 
-        info = None
-        if has_landmarks(results):
-            landmarks = results.pose_landmarks[0]
-            info = self.checker.update(landmarks, w, h)
-            frame = draw_skeleton(frame, results)
+        frame = cv2.flip(frame, 1)
+        h, w, _ = frame.shape
 
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb.flags.writeable = False
+        results = pose.process(rgb) if "pose" in globals() else None
+        rgb.flags.writeable = True
+
+        landmarks = None
+        if results is not None and results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+
+        if landmarks is not None:
+            result = self.checker.update(landmarks, w, h)
+            self._refresh_status(result)
+        else:
+            self.feedback_label.setText("몸 전체가 화면에 보이도록 위치를 조정하세요")
+            self.feedback_label.setObjectName("feedbackWarn")
+
+        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimg).scaled(
+            self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.video_label.setPixmap(pixmap)
+
+        if self.checker.session.done:
+            self._load_next_exercise(work_done=True)
+
+    def _refresh_status(self, result):
         session = self.checker.session
 
-        # ----- 세트 완료 감지 → 피드백 로그 -----
-        if session.rep_count > self._last_rep_count:
-            fb = "정확한 자세!" if not session.last_rep_errors \
-                 else " / ".join(session.last_rep_errors)
-            msg = f"[세트 {session.rep_count} 완료]  {fb}"
-            print(msg)
-            self.feedback_label.setText(msg)
-            self._last_rep_count = session.rep_count
+        self.count_label.setText(str(session.count))
+        self.set_label.setText(f"세트 {session.rep_count + 1}/{session.target_reps}")
 
-        # ----- 상태 표시 -----
         if session.resting:
-            # 세트 간 휴식
-            self.status_label.setText(
-                f"{self.checker.name}  세트 {session.rep_count}/{session.target_reps} 완료\n"
-                f"세트 휴식 {session.rest_remaining():.0f}초")
+            remaining = int(session.rest_remaining())
+            self.feedback_label.setText(f"휴식 중... {remaining}초 남음")
+            self.feedback_label.setObjectName("feedbackWarn")
+            return
+
+        errors = getattr(self.checker, "last_rep_errors", [])
+        if errors:
+            self.feedback_label.setText("  /  ".join(errors))
+            self.feedback_label.setObjectName("feedbackWarn")
         else:
-            # 플랭크: 남은 유지 시간 표시
-            if self.checker.name == "plank" and info is not None:
-                elapsed = info.get("elapsed", 0.0)
-                target = info.get("target_seconds", 0)
-                remaining_hold = max(0.0, target - elapsed)
-                self.status_label.setText(
-                    f"플랭크  세트 {session.rep_count}/{session.target_reps}  "
-                    f"남은 시간 {remaining_hold:.1f}초 / {target:.0f}초")
-            else:
-                # 스쿼트/바이셉컬: 카운트 + 실시간 폼 경고
-                warn = ""
-                if session.last_rep_errors:
-                    warn = "   ⚠ " + session.last_rep_errors[0]
-                self.status_label.setText(
-                    f"{self.checker.name}  "
-                    f"세트 {session.rep_count}/{session.target_reps}  "
-                    f"카운트 {session.count}/{session.target_count}{warn}")
+            self.feedback_label.setText("Good form!")
+            self.feedback_label.setObjectName("feedbackGood")
 
-        # ----- 한 운동 완료 → 다음 운동 -----
-        if session.done:
-            summary = "  ".join(f"{k}: {v}회" for k, v in session.error_counter.items())
-            print(f"[{self.checker.name} 완료]  {summary}")
-            self.feedback_label.setText(f"[{self.checker.name} 완료]  {summary}")
-
-            nxt = self.selector.next_workout(work_done=True)
-            if nxt is None:
-                self._all_done()
-            else:
-                self.checker = self._make_checker(nxt)
-                self._last_rep_count = 0
-                self.between_rest = True
-                self.between_rest_start = time.time()
-
-        return frame
-
-    def _all_done(self):
-        self.state = "done"
+    def on_stop(self):
         self.timer.stop()
-        self.video_label.clear()
-        self.feedback_label.hide()
-        self.status_label.setText("모든 운동을 완료했습니다! 수고하셨습니다.")
-
-    # ---------- 공통 ----------
-    def _restart(self):
-        self.cap_form = CaptureForm()
-        self.state = "capture"
-        self.capture_btn.show()
-        self.video_label.show()
-        if not self.timer.isActive():
-            self.timer.start(30)
+        if self.cap.isOpened():
+            self.cap.release()
+        self.close()
 
     def closeEvent(self, event):
-        self.cap.release()
+        self.timer.stop()
+        if self.cap.isOpened():
+            self.cap.release()
         event.accept()
 
 
@@ -423,57 +480,66 @@ class UserInfoForm(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("사용자 정보 입력")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(480)
         self.result = None
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(6)
+        layout.setContentsMargins(30, 26, 30, 26)
+        layout.setSpacing(4)
 
-        title = QLabel("운동 추천을 위한 정보 입력")
+        title = QLabel("맞춤 운동 추천")
         title.setObjectName("title")
         layout.addWidget(title)
 
+        subtitle = QLabel("간단한 정보를 알려주시면 자세 분석 기반으로\n맞춤 스트레칭과 운동을 추천해드려요")
+        subtitle.setObjectName("subtitle")
+        layout.addWidget(subtitle)
+
+        # ----- 나이 -----
         age_label = QLabel("나이")
         age_label.setObjectName("field")
         layout.addWidget(age_label)
+
         self.age_spin = QSpinBox()
         self.age_spin.setRange(10, 90)
         self.age_spin.setValue(30)
-        self.age_spin.setSuffix(" 세")
+        self.age_spin.setSuffix("  세")
         layout.addWidget(self.age_spin)
 
+        # ----- 체력 수준 -----
         level_label = QLabel("체력 수준 / 운동 경험")
         level_label.setObjectName("field")
         layout.addWidget(level_label)
+
         self.level_combo = QComboBox()
         self.level_combo.addItems(["초급", "중급", "고급"])
         layout.addWidget(self.level_combo)
 
-        goal_box = QGroupBox("운동 목표")
+        # ----- 운동 목표 -----
+        goal_label = QLabel("운동 목표")
+        goal_label.setObjectName("field")
+        layout.addWidget(goal_label)
+
         goal_layout = QHBoxLayout()
-        goal_layout.setSpacing(4)
+        goal_layout.setSpacing(8)
         self.goal_group = QButtonGroup(self)
 
-        self.goal_posture   = QRadioButton("자세 교정")
-        self.goal_strength  = QRadioButton("근력 강화")
+        self.goal_posture = QRadioButton("자세 교정")
+        self.goal_strength = QRadioButton("근력 강화")
         self.goal_endurance = QRadioButton("지구력")
         self.goal_posture.setChecked(True)
 
         for i, btn in enumerate([self.goal_posture, self.goal_strength, self.goal_endurance]):
             self.goal_group.addButton(btn, i)
             goal_layout.addWidget(btn)
-        goal_box.setLayout(goal_layout)
-        layout.addWidget(goal_box)
 
-        submit_btn = QPushButton("제출")
+        layout.addLayout(goal_layout)
+
+        # ----- 제출 버튼 -----
+        submit_btn = QPushButton("자세 촬영하러 가기")
+        submit_btn.setObjectName("primary")
         submit_btn.clicked.connect(self.on_submit)
         layout.addWidget(submit_btn)
-
-        self.result_label = QLabel("정보를 입력하고 제출을 눌러주세요")
-        self.result_label.setObjectName("result")
-        self.result_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.result_label)
 
         self.setLayout(layout)
 
@@ -488,16 +554,6 @@ class UserInfoForm(QWidget):
         }
         print("입력값:", self.result)
 
-        # 카메라 화면으로 전환
         self.camera = CameraView(self.result)
         self.camera.show()
         self.close()
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    if STYLE:
-        app.setStyleSheet(STYLE)
-    form = UserInfoForm()
-    form.show()
-    sys.exit(app.exec())

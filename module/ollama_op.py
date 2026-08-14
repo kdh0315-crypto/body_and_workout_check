@@ -2,12 +2,11 @@ import json
 import ollama
 
 REF_RANGES = {
-    "shoulder_tilt":     ("Shoulder lateral tilt",              0,  2, "abs"),
+    "shoulder_tilt": ("Shoulder lateral tilt", 0, 2.5, "abs"),
     "knee_valgus":       ("Knee alignment deviation (L/R avg)", 0,  5, "high"),
-    "forward_head":      ("Forward head angle (ear-shoulder-hip)", 55, 65, "low"),
-    "round_shoulder":    ("Round shoulder angle",               0, 10, "high"),
-    "thoracic_kyphosis": ("Thoracic kyphosis angle",           30, 40, "high"),
-    "pelvic_tilt_ant":   ("Anterior pelvic tilt angle",         5, 10, "high"),
+    "forward_head":      ("Forward head posture (EAR-SHOULDER proxy)", 0, 32, "high"),
+   "thoracic_kyphosis": ("Thoracic posture proxy",            80, 90, "high"),
+    "pelvic_tilt_ant": ("Pelvic / hip-trunk alignment proxy", 0, 18, "high"),
 }
 
 # 운동 3종 + 안전 범위 (횟수는 코드에서 이 범위로 clamp)
@@ -19,19 +18,25 @@ EXERCISE_POOL = {
 
 
 def find_abnormal(metrics: dict) -> list:
-    """정상 범위 벗어난 항목을 편차순 정렬해 반환. (기존과 동일)"""
+    """정상 범위를 벗어난 항목을 반환한다. FHA는 Fusion 결과를 최종 판정으로 사용한다."""
     abnormal = []
+ 
+
     for key, (label, lo, hi, direction) in REF_RANGES.items():
         if key not in metrics:
             continue
+
         v = metrics[key]
+
         if lo <= v <= hi:
             continue
+
         dev = lo - v if v < lo else v - hi
         abnormal.append({
             "label": label, "value": v,
             "range": f"{lo}~{hi}", "deviation": round(dev, 1),
         })
+
     abnormal.sort(key=lambda x: x["deviation"], reverse=True)
     return abnormal
 

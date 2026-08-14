@@ -343,12 +343,18 @@ class SquatChecker:
     def __init__(self, target_reps=5, target_count=10, rest_seconds=30):
         self.session = ExerciseSession(target_reps, target_count, rest_seconds)
         self.current_state = self.STATE_STANDING
-        self.bottom_snapshot_errors = []
+        self._reset_bottom_tracking()
 
     def reset(self):
         self.current_state = self.STATE_STANDING
-        self.bottom_snapshot_errors = []
+        self._reset_bottom_tracking()
         self.session.reset()
+
+    def _reset_bottom_tracking(self):
+        """BOTTOM 구간 동안 도달한 가장 깊은 지점(무릎/고관절 최소, 허리 최대)을 추적."""
+        self.bottom_min_knee = None
+        self.bottom_min_hip = None
+        self.bottom_max_trunk = None
 
     def _check_bottom_form(self, trunk_angle, knee_angle, hip_flex_angle):
         """
@@ -401,19 +407,29 @@ class SquatChecker:
                        and left_hip_angle > self.THRESHOLD and right_hip_angle > self.THRESHOLD)
 
             if went_down and self.current_state != self.STATE_BOTTOM:
-                trunk_angle = calculate_trunk_angle(l_shoulder, l_hip)
-                self.bottom_snapshot_errors = self._check_bottom_form(
-                    trunk_angle, left_knee_angle, left_hip_angle)
                 self.current_state = self.STATE_BOTTOM
+                self._reset_bottom_tracking()
                 print(f"[STATE CHANGE] {self.STATE_STANDING} -> {self.STATE_BOTTOM}  "
                       f"(knee L={int(left_knee_angle)} R={int(right_knee_angle)})")
+
+            if self.current_state == self.STATE_BOTTOM:
+                # BOTTOM 구간에 머무는 동안 매 프레임 갱신해 가장 깊게 내려간 지점을 기록
+                trunk_angle = calculate_trunk_angle(l_shoulder, l_hip)
+                if self.bottom_min_knee is None or left_knee_angle < self.bottom_min_knee:
+                    self.bottom_min_knee = left_knee_angle
+                if self.bottom_min_hip is None or left_hip_angle < self.bottom_min_hip:
+                    self.bottom_min_hip = left_hip_angle
+                if self.bottom_max_trunk is None or trunk_angle > self.bottom_max_trunk:
+                    self.bottom_max_trunk = trunk_angle
 
             if came_up and self.current_state == self.STATE_BOTTOM:
                 self.current_state = self.STATE_STANDING
                 print(f"[STATE CHANGE] {self.STATE_BOTTOM} -> {self.STATE_STANDING}  "
                       f"(knee L={int(left_knee_angle)} R={int(right_knee_angle)})")
-                self.session.record_count(self.bottom_snapshot_errors)
-                self.bottom_snapshot_errors = []
+                errors = self._check_bottom_form(
+                    self.bottom_max_trunk, self.bottom_min_knee, self.bottom_min_hip)
+                self.session.record_count(errors)
+                self._reset_bottom_tracking()
 
         return {
             "points": {"knee": l_knee, "hip": l_hip},
@@ -523,12 +539,16 @@ class LungeChecker:
     def __init__(self, target_reps=5, target_count=10, rest_seconds=30):
         self.session = ExerciseSession(target_reps, target_count, rest_seconds)
         self.current_state = None
-        self.bottom_snapshot_errors = []
+        self._reset_bottom_tracking()
 
     def reset(self):
         self.current_state = None
-        self.bottom_snapshot_errors = []
+        self._reset_bottom_tracking()
         self.session.reset()
+
+    def _reset_bottom_tracking(self):
+        """DOWN 구간 동안 도달한 가장 깊은(front_knee_angle 최소) 지점을 추적."""
+        self.bottom_min_front_knee = None
 
     def _check_form(self, front_knee_angle):
         errors = []
@@ -570,15 +590,17 @@ class LungeChecker:
 
             if front_knee_angle < self.KNEE_THRESHOLD and back_knee_angle < self.KNEE_THRESHOLD:
                 self.current_state = self.STATE_DOWN
-                self.bottom_snapshot_errors = self._check_form(front_knee_angle)
+                if self.bottom_min_front_knee is None or front_knee_angle < self.bottom_min_front_knee:
+                    self.bottom_min_front_knee = front_knee_angle
 
             if front_knee_angle > self.KNEE_THRESHOLD and self.current_state == self.STATE_DOWN:
                 self.current_state = self.STATE_UP
                 rep_just_completed = True
 
             if rep_just_completed:
-                self.session.record_count(self.bottom_snapshot_errors)
-                self.bottom_snapshot_errors = []
+                errors = self._check_form(self.bottom_min_front_knee)
+                self.session.record_count(errors)
+                self._reset_bottom_tracking()
 
         return {
             "points": {"knee": front_knee, "hip": front_hip},

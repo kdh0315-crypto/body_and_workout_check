@@ -1,4 +1,5 @@
 import sys
+import time
 import cv2
 from PySide6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QPushButton
 from PySide6.QtGui import QImage, QPixmap
@@ -14,7 +15,7 @@ from module.mediapipe_op import *      # CaptureForm, save_with_pose 등
 from module.workout_sel import *
 from module.cal_angle import *
 from module.ollama_op import *
-from module.workout_checker import get_exercise_checker
+from module.workout_checker import get_exercise_checker, ActionRecognizer, update_with_recognition
 
 
 from gui.gui_style import *
@@ -37,7 +38,8 @@ class LLMWorker(QThread):
 
         goal = self.user_info.get("goal", "posture")
         level = self.user_info.get("level", "beginner")
-        workout = prescribe_workouts(goal, level)
+        age = self.user_info.get("age")
+        workout = prescribe_workouts(goal, level, age)
 
         if not stretches and not workout.get("recommendations"):
             self.failed.emit("추천을 생성하지 못했습니다. 다시 시도해주세요.")
@@ -269,6 +271,9 @@ class CameraView(QWidget):
                 sets = r.get("sets")
                 lines.append(f"  {r.get('priority')}.  {r.get('exercise')}")
                 lines.append(f"      {cnt}{unit} x {sets} sets")
+                weight = r.get("weight")
+                if weight:
+                    lines.append(f"      권장 중량: {weight}")
                 lines.append(f"      {r.get('reason')}")
                 lines.append("")
         else:
@@ -291,12 +296,13 @@ class CameraView(QWidget):
 class WorkoutView(QWidget):
     """
     workout_sel이 관리하는 운동 목록을 순서대로 진행하는 실행 화면.
-    카메라 프레임을 workout_checker(get_exercise_checker)에 넘겨
+    카메라 프레임을 ActionRecognizer(LSTM)로 운동 종류를 자동 인식하고,
+    인식된 운동이 현재 목표 운동과 일치할 때만 workout_checker(get_exercise_checker)로
     rep 카운트 + 자세 피드백을 실시간으로 표시한다.
-
-    LSTM(운동 자동 인식) 연결 전이라, 지금은 workout_sel이 알려주는
-    운동을 순서대로 수동 진행하는 방식으로 동작한다.
     """
+
+    # 목표 운동과 다른 동작으로 인식된 상태가 이만큼 연속으로 유지돼야 화면에 표시
+    MISMATCH_DEBOUNCE_SEC = 1.0
 
     def __init__(self, selector: "workout_sel"):
         super().__init__()
@@ -304,6 +310,9 @@ class WorkoutView(QWidget):
         self.setMinimumWidth(560)
         self.selector = selector
         self.checker = None
+        self.recognizer = ActionRecognizer()
+        # 목표 운동과 다른 동작이 감지되기 시작한 시각 (짧은 오인식 깜빡임 방지용 디바운스)
+        self.mismatch_since = None
 
         layout = QVBoxLayout()
         layout.setContentsMargins(28, 26, 28, 26)
@@ -337,7 +346,11 @@ class WorkoutView(QWidget):
         self.set_label = QLabel("세트 -/-")
         self.set_label.setObjectName("caption")
         name_col.addWidget(self.set_label)
-        
+
+        self.recognized_label = QLabel("동작 인식 준비 중...")
+        self.recognized_label.setObjectName("caption")
+        name_col.addWidget(self.recognized_label)
+
         info_layout.addLayout(name_col)
         info_layout.addStretch()
         
@@ -362,6 +375,11 @@ class WorkoutView(QWidget):
         self.feedback_label.setWordWrap(True)
         layout.addWidget(self.feedback_label)
 
+        self.start_btn = QPushButton("운동 시작")
+        self.start_btn.setObjectName("primary")
+        self.start_btn.clicked.connect(self.on_start_workout)
+        layout.addWidget(self.start_btn)
+
         self.stop_btn = QPushButton("운동 종료")
         self.stop_btn.setObjectName("danger")
         self.stop_btn.clicked.connect(self.on_stop)
@@ -372,11 +390,27 @@ class WorkoutView(QWidget):
         self.cap = cv2.VideoCapture(0)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+        # extract_landmarks_video는 단조증가하는 타임스탬프(ms)가 필요
+        self.start_time = time.perf_counter()
+        self.prev_ts = -1
+
+        # '운동 시작' 버튼을 누르기 전까지는 미리보기만 표시하고 판별은 하지 않음
+        self.workout_started = False
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(30)
 
         self._load_next_exercise()
+        self._set_feedback("\"운동 시작\" 버튼을 눌러 시작하세요", "feedbackGood")
+
+    def on_start_workout(self):
+        self.workout_started = True
+        self.start_btn.hide()
+        # 대기 시간이 타임스탬프에 섞이지 않도록 시작 시점을 다시 기준으로 잡음
+        self.start_time = time.perf_counter()
+        self.prev_ts = -1
+        self._set_feedback("자세를 잡고 운동을 시작하세요", "feedbackGood")
 
     def _load_next_exercise(self, work_done: bool = False):
         """workout_sel에서 다음 운동을 받아와 checker를 새로 생성."""
@@ -392,12 +426,13 @@ class WorkoutView(QWidget):
             target_count=item.get("count", 10),
             rest_seconds=item.get("rest_seconds", 30),
         )
+        self.recognizer.reset()
+        self.mismatch_since = None
         self.exercise_label.setText(item["exercise"].upper())
         self.set_label.setText(f"세트 1/{item.get('sets', 1)}")
         self.count_unit_label.setText(f"/ {item.get('count', 10)} reps")
-        self.feedback_label.setText("자세를 잡고 운동을 시작하세요")
-        self.feedback_label.setObjectName("feedbackGood")
-        self.feedback_label.setStyleSheet("")
+        self._set_feedback("자세를 잡고 운동을 시작하세요", "feedbackGood")
+        self._set_recognized("동작 인식 준비 중...", "caption")
 
     def _show_all_done(self):
         self.timer.stop()
@@ -407,8 +442,54 @@ class WorkoutView(QWidget):
         self.exercise_label.setText("완료")
         self.count_label.setText("✓")
         self.count_unit_label.setText("")
-        self.feedback_label.setText("수고하셨습니다. 오늘의 운동을 모두 마쳤어요.")
-        self.feedback_label.setObjectName("feedbackGood")
+        self._set_feedback("수고하셨습니다. 오늘의 운동을 모두 마쳤어요.", "feedbackGood")
+
+    def _set_feedback(self, text, kind):
+        """feedback_label의 텍스트와 상태(good/warn)를 갱신하고 QSS를 다시 적용한다.
+
+        Qt는 objectName이 바뀌어도 스타일을 자동으로 재계산하지 않으므로
+        unpolish/polish를 호출해 강제로 다시 적용해야 색이 바뀐다.
+        """
+        self.feedback_label.setText(text)
+        self.feedback_label.setObjectName(kind)
+        self.feedback_label.style().unpolish(self.feedback_label)
+        self.feedback_label.style().polish(self.feedback_label)
+
+    def _set_recognized(self, text, kind):
+        """recognized_label(LSTM이 현재 인식 중인 운동)의 텍스트와 스타일을 갱신."""
+        self.recognized_label.setText(text)
+        self.recognized_label.setObjectName(kind)
+        self.recognized_label.style().unpolish(self.recognized_label)
+        self.recognized_label.style().polish(self.recognized_label)
+
+    def _update_recognized_label(self, recognized_action):
+        if recognized_action is None:
+            self.mismatch_since = None
+            self._set_recognized("동작 인식 준비 중...", "caption")
+            return
+
+        if recognized_action == "...":
+            self.mismatch_since = None
+            self._set_recognized("동작 인식 중...", "caption")
+            return
+
+        if recognized_action == self.checker.name:
+            self.mismatch_since = None
+            self._set_recognized(f"{recognized_action.upper()} 중...", "caption")
+            return
+
+        # 목표 운동과 다르게 인식됨 — 짧은 오인식(글리치)일 수 있으므로
+        # MISMATCH_DEBOUNCE_SEC 이상 연속으로 유지될 때만 화면에 반영한다.
+        now = time.time()
+        if self.mismatch_since is None:
+            self.mismatch_since = now
+            return  # 방금 시작된 불일치, 아직은 이전 표시를 그대로 둔다
+
+        if now - self.mismatch_since >= self.MISMATCH_DEBOUNCE_SEC:
+            self._set_recognized(
+                f"{recognized_action.upper()} 중... (목표 운동: {self.checker.name.upper()})",
+                "feedbackWarn",
+            )
 
     def update_frame(self):
         ret, frame = self.cap.read()
@@ -418,32 +499,54 @@ class WorkoutView(QWidget):
         frame = cv2.flip(frame, 1)
         h, w, _ = frame.shape
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
-        results = pose.process(rgb) if "pose" in globals() else None
-        rgb.flags.writeable = True
+        if not self.workout_started:
+            # 버튼을 누르기 전엔 판별 없이 카메라 미리보기만 표시
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg).scaled(
+                self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            self.video_label.setPixmap(pixmap)
+            return
 
-        landmarks = None
-        if results is not None and results.pose_landmarks:
-            landmarks = results.pose_landmarks.landmark
+        session = self.checker.session
+        # 휴식 시간은 프레임 처리 여부와 상관없이 흘러야 하므로 먼저 갱신
+        session.update_rest()
 
-        if landmarks is not None:
-            result = self.checker.update(landmarks, w, h)
-            self._refresh_status(result)
+        if session.resting or session.done:
+            # 휴식/완료 중엔 카메라 밖으로 나가도 되므로 포즈 인식을 건너뛴다
+            self.mismatch_since = None
+            self._set_recognized("쉬는 중" if session.resting else "-", "caption")
+            self._refresh_status()
         else:
-            self.feedback_label.setText("몸 전체가 화면에 보이도록 위치를 조정하세요")
-            self.feedback_label.setObjectName("feedbackWarn")
+            ts = int((time.perf_counter() - self.start_time) * 1000)
+            if ts <= self.prev_ts:
+                ts = self.prev_ts + 1
+            self.prev_ts = ts
 
+            results = extract_landmarks_video(frame, ts)
+            if has_landmarks(results):
+                landmarks = results.pose_landmarks[0]
+                frame = draw_skeleton(frame, results)
+                # LSTM이 인식한 운동이 현재 목표 운동과 일치할 때만 checker가 카운트한다
+                recognized_action, _, _ = update_with_recognition(
+                    self.recognizer, self.checker, landmarks, w, h)
+                self._update_recognized_label(recognized_action)
+                self._refresh_status()
+            else:
+                self._set_feedback("몸 전체가 화면에 보이도록 위치를 조정하세요", "feedbackWarn")
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qimg).scaled(
             self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
         self.video_label.setPixmap(pixmap)
 
-        if self.checker.session.done:
+        if session.done:
             self._load_next_exercise(work_done=True)
 
-    def _refresh_status(self, result):
+    def _refresh_status(self):
         session = self.checker.session
 
         self.count_label.setText(str(session.count))
@@ -451,17 +554,17 @@ class WorkoutView(QWidget):
 
         if session.resting:
             remaining = int(session.rest_remaining())
-            self.feedback_label.setText(f"휴식 중... {remaining}초 남음")
-            self.feedback_label.setObjectName("feedbackWarn")
+            self._set_feedback(f"휴식 중... {remaining}초 남음", "feedbackWarn")
             return
 
-        errors = getattr(self.checker, "last_rep_errors", [])
+        if session.done:
+            return
+
+        errors = session.last_rep_errors
         if errors:
-            self.feedback_label.setText("  /  ".join(errors))
-            self.feedback_label.setObjectName("feedbackWarn")
+            self._set_feedback("  /  ".join(errors), "feedbackWarn")
         else:
-            self.feedback_label.setText("Good form!")
-            self.feedback_label.setObjectName("feedbackGood")
+            self._set_feedback("Good form!", "feedbackGood")
 
     def on_stop(self):
         self.timer.stop()
@@ -524,12 +627,11 @@ class UserInfoForm(QWidget):
         goal_layout.setSpacing(8)
         self.goal_group = QButtonGroup(self)
 
-        self.goal_posture = QRadioButton("자세 교정")
         self.goal_strength = QRadioButton("근력 강화")
         self.goal_endurance = QRadioButton("지구력")
-        self.goal_posture.setChecked(True)
+        self.goal_strength.setChecked(True)
 
-        for i, btn in enumerate([self.goal_posture, self.goal_strength, self.goal_endurance]):
+        for i, btn in enumerate([self.goal_strength, self.goal_endurance]):
             self.goal_group.addButton(btn, i)
             goal_layout.addWidget(btn)
 
@@ -544,7 +646,7 @@ class UserInfoForm(QWidget):
         self.setLayout(layout)
 
     def on_submit(self):
-        goal_map = {0: "posture", 1: "strength", 2: "endurance"}
+        goal_map = {0: "strength", 1: "endurance"}
         level_map = {"초급": "beginner", "중급": "intermediate", "고급": "advanced"}
 
         self.result = {

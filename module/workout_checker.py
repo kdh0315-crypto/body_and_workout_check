@@ -70,7 +70,7 @@ class TRTModel:
 # 10프레임 시퀀스로 학습한 엔진
 # - 기존 30프레임보다 버퍼가 1/3이라 더 빠르게 반응이 가능
 # - Jetson은 frame이 부족하여 이러한 모델이 더 정확한 판단 가능
-LSTM_ENGINE_PATH = "models/lstm_10frame.trt"
+LSTM_ENGINE_PATH = "models/lstm_tanh_kfold.trt"
 
 ACTIONS = np.array(["pushup", "squat", "lunge", "noactions"])
 SEQ_LEN = 10

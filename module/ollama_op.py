@@ -11,10 +11,13 @@ REF_RANGES = {
 }
 
 # 운동 3종 + 안전 범위 (횟수는 코드에서 이 범위로 clamp)
+# weight_capable: 덤벨 등 외부 중량을 들고 할 수 있는 운동인지 (푸시업은 몸으로 미는 동작이라 불가)
+# weight_range: weight_capable인 운동에 한해, 권장 중량(kg)의 최소~최대 범위.
+#               런지는 편측(한쪽 다리) 운동이라 균형/안전을 고려해 스쿼트보다 낮게 설정.
 EXERCISE_POOL = {
-    "squat":   {"unit": "reps",    "count": (8, 20),  "sets": (2, 4), "rest": (20, 90)},
-    "lunge":   {"unit": "reps",    "count": (8, 20),  "sets": (2, 3), "rest": (30, 120)},
-    "pushup":  {"unit": "reps",    "count": (8, 15),  "sets": (2, 4), "rest": (20, 90)},
+    "squat":   {"unit": "reps",    "count": (8, 20),  "sets": (2, 4), "rest": (20, 90),  "weight_capable": True,  "weight_range": (0, 15)},
+    "lunge":   {"unit": "reps",    "count": (8, 20),  "sets": (2, 3), "rest": (30, 120), "weight_capable": True,  "weight_range": (0, 10)},
+    "pushup":  {"unit": "reps",    "count": (8, 15),  "sets": (2, 4), "rest": (20, 90),  "weight_capable": False, "weight_range": (0, 0)},
 }
 
 
@@ -87,68 +90,111 @@ GOAL_DESC = {
 }
 
 
-LEVEL_RANGE_POSITION = {
-    "beginner":     "the LOWER third",
-    "intermediate": "the MIDDLE third",
-    "advanced":     "the UPPER third",
-}
+def _age_factor(age: int = None) -> float:
+    """
+    나이에 따른 강도 감쇠 계수 (1.0 = 감쇠 없음, 0.4 = 하한).
 
+    - 18~54세: 표준 성인 구간, 감쇠 없음 (factor = 1.0)
+    - 18세 미만: 나이가 어릴수록 완만하게 감소 (성장기 안전 고려, 조금 더 가파른 기울기)
+    - 55세 이상: 나이가 많을수록 완만하게 감소 (18세 미만보다 더 완만한 기울기)
 
-def _age_instruction(age) -> str:
+    기존에는 나이가 범위를 벗어나면 즉시 pos를 0.3으로 캡(cap)하는 방식이라
+    54세와 55세 사이에서 강도가 급격히 끊기는 문제가 있었음.
+    거리(distance)에 비례해 계수를 서서히 낮춰서 경계에서도 자연스럽게 이어지도록 함.
+    """
     if age is None:
+        return 1.0
+    if 18 <= age < 55:
+        return 1.0
+    if age < 18:
+        distance = 18 - age
+        return max(0.4, 1.0 - distance * 0.06)
+    distance = age - 54
+    return max(0.4, 1.0 - distance * 0.02)
+
+
+def _target_position(level: str, goal: str, age: int = None) -> float:
+    """레벨/목표/나이를 반영한 0~1 위치. 높을수록 안전 범위의 상단(더 높은 강도) 쪽.
+
+    레벨(기본 위치) -> 목표(가산 보정) -> 나이(비례 감쇠) 순서로 계산해서,
+    세 요인이 순차적으로 자연스럽게 합성되도록 함.
+    """
+    pos = {"beginner": 0.2, "intermediate": 0.5, "advanced": 0.8}.get(level, 0.5)
+
+    if goal == "endurance":
+        pos += 0.15  # 지구력 목표면 reps를 조금 더
+
+    pos *= _age_factor(age)  # 나이 요인은 비례 감쇠로 반영 (급격한 캡 대신)
+
+    return min(max(pos, 0.0), 1.0)
+
+
+def _rest_position(goal: str) -> float:
+    """휴식 시간은 reps/sets와 반대 방향(지구력=짧게, 근력=길게)이라 별도 위치로 계산."""
+    if goal == "endurance":
+        return 0.2
+    if goal == "strength":
+        return 0.8
+    return 0.5
+
+
+def _target_value(lo, hi, pos: float) -> int:
+    return round(lo + (hi - lo) * pos)
+
+
+def _suggest_weight(name: str, level: str, goal: str, age: int = None) -> str:
+    """권장 중량을 코드에서 결정론적으로 계산 (LLM 판단에 맡기지 않음).
+    count/sets/rest와 동일하게 weight_range + pos 보간 공식을 그대로 재사용해서,
+    별도의 임의 구간(예: 0.3/0.5/0.7 등급 나누기) 없이 일관되게 산출한다."""
+    r = EXERCISE_POOL[name]
+    if goal != "strength" or not r["weight_capable"]:
         return ""
-    if age < 18 or age >= 55:
-        return (
-            f"- User age is {age}, outside the standard adult range: reduce intensity further — "
-            "shift count/sets toward the LOWER end of the safe range regardless of level.\n"
-        )
-    return f"- User age is {age}: no extra age-based reduction beyond the level guidance below.\n"
+
+    pos = _target_position(level, goal, age)
+    w = _target_value(*r["weight_range"], pos)
+
+    if w <= 1:
+        return "체중 유지, 무게 추가 없음"
+    return f"덤벨 {w}kg"
 
 
 def build_workout_prompt(goal: str, level: str, age: int = None) -> str:
     goal_text = GOAL_DESC.get(goal, "general fitness")
-    # 범위 안내에 rest 추가
-    ranges_text = "\n".join(
-        f"- {name}: {r['count'][0]}-{r['count'][1]} {r['unit']}, "
-        f"{r['sets'][0]}-{r['sets'][1]} sets, "
-        f"rest {r['rest'][0]}-{r['rest'][1]} seconds between sets"
+
+    # 레벨/나이/목표를 코드에서 미리 반영해 이미 좁혀진 목표 수치를 계산.
+    # LLM에게 범위를 텍스트로 설명하고 계산을 맡기지 않아 프롬프트가 짧고 결과가 안정적이다.
+    pos = _target_position(level, goal, age)
+    rest_pos = _rest_position(goal)
+
+    # weight도 count/sets/rest와 마찬가지로 코드에서 미리 계산 (LLM이 판단하지 않음)
+    exercises_text = "\n".join(
+        f"- {name}: target {_target_value(*r['count'], pos)} {r['unit']}, "
+        f"{_target_value(*r['sets'], pos)} sets, "
+        f"rest {_target_value(*r['rest'], rest_pos)}s between sets"
+        + (f", weight \"{_suggest_weight(name, level, goal, age)}\"" if goal == "strength" else "")
         for name, r in EXERCISE_POOL.items()
     )
 
-    level_position = LEVEL_RANGE_POSITION.get(level, "the MIDDLE third")
-    age_instruction = _age_instruction(age)
-
     if goal == "strength":
         goal_instruction = (
-            '- Since goal is strength building: for EACH exercise, also suggest an appropriate added '
-            'weight (dumbbell/vest, in kg) in the "weight" field, based on the user\'s age and level '
-            '(e.g. "덤벨 5kg", or "체중 유지, 무게 추가 없음" for beginners/reduced-intensity users). '
-            "Keep it conservative and safe.\n"
-        )
-    elif goal == "endurance":
-        goal_instruction = (
-            '- Since goal is endurance: push "count" (reps) toward the UPPER end of each exercise\'s '
-            'safe range, keep sets moderate, and leave "weight" as an empty string "".\n'
+            '- Use the "weight" value shown above for each exercise exactly as given — '
+            'do not change or recalculate it.\n'
         )
     else:
         goal_instruction = '- Leave the "weight" field as an empty string "" (no added weight for this goal).\n'
 
     return f"""You are an exercise coach.
 User goal: {goal_text}
-User level: {level}
-User age: {age if age is not None else "unknown"}
 
-Available exercises and SAFE ranges (do not exceed):
-{ranges_text}
+Exercises with pre-computed targets (already tailored to the user's level/age/goal):
+{exercises_text}
 
 Instructions:
 - You MUST recommend EVERY SINGLE exercise listed above — squat, lunge, AND pushup — with no exceptions.
   Never omit one, never return fewer than 3 items, and NEVER return an empty "recommendations" list.
-- For each exercise, assign count and sets WITHIN its safe range, matched to the user's goal.
-- Base count/sets primarily on level: use {level_position} of each safe range as a starting point.
-{age_instruction}{goal_instruction}- Set "priority" as the order to perform (1 = first), ordering them to fit the goal.
+- Use the target count/sets/rest_seconds shown above for each exercise as-is — do not recalculate them.
 - Use the unit shown above for each exercise.
-- Assign rest_seconds between sets WITHIN the safe range (shorter for endurance, longer for strength).
+{goal_instruction}- Set "priority" as the order to perform (1 = first), ordering them to fit the goal.
 - Give a one-sentence reason IN KOREAN (short).
 - Do NOT give medical diagnoses.
 
@@ -156,9 +202,9 @@ Respond ONLY in this JSON format. "recommendations" MUST contain exactly 3 items
 squat, lunge, and pushup. A partial or empty list is INVALID:
 {{
   "recommendations": [
-    {{"exercise": "squat", "priority": 1, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 45, "weight": "", "reason": "..."}},
-    {{"exercise": "lunge", "priority": 2, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 30, "weight": "", "reason": "..."}},
-    {{"exercise": "pushup", "priority": 3, "count": 12, "unit": "reps", "sets": 3, "rest_seconds": 60, "weight": "", "reason": "..."}}
+    {{"exercise": "squat", "priority": ..., "count": ..., "unit": "reps", "sets": ..., "rest_seconds": ..., "weight": "...", "reason": "..."}},
+    {{"exercise": "lunge", "priority": ..., "count": ..., "unit": "reps", "sets": ..., "rest_seconds": ..., "weight": "...", "reason": "..."}},
+    {{"exercise": "pushup", "priority": ..., "count": ..., "unit": "reps", "sets": ..., "rest_seconds": ..., "weight": "", "reason": "..."}}
   ]
 }}"""
 
@@ -190,8 +236,9 @@ def prescribe_workouts(goal: str, level: str, age: int = None) -> dict:
         rec["sets"]  = _clamp(rec.get("sets",  r["sets"][0]),  *r["sets"])
         rec["rest_seconds"] = _clamp(rec.get("rest_seconds", r["rest"][0]), *r["rest"])  # 추가
         rec["unit"]  = r["unit"]
-        # 근력 강화 목표일 때만 중량 추천을 노출 (다른 목표는 LLM이 뭐라 적었든 무시)
-        rec["weight"] = rec.get("weight", "") if goal == "strength" else ""
+        # weight는 LLM 응답을 신뢰하지 않고, count/sets/rest와 동일하게 코드 계산값으로 강제 덮어씀.
+        # (LLM이 프롬프트를 무시하고 다른 값을 내더라도 최종 결과는 항상 일관되게 유지)
+        rec["weight"] = _suggest_weight(ex, level, goal, age)
         cleaned.append(rec)
 
     # priority 순 정렬해서 반환

@@ -248,6 +248,10 @@ class ExerciseSession:
         self.count = 0
         self.error_counter = {}
         self.last_rep_errors = []
+        # 이번 세트 동안 나온 에러 집계 (세트가 끝나면 last_set_error_counter로 넘어가고 비워짐)
+        self.current_set_error_counter = {}
+        # 방금 끝난 세트의 에러 집계 — 세트 종료 시점(휴식 시작 등)에 GUI가 보여줄 요약
+        self.last_set_error_counter = {}
         self.has_completed_rep = False
 
         self.resting = False  # check if it is break time
@@ -268,8 +272,10 @@ class ExerciseSession:
         if errors:
             for err in errors:
                 self.error_counter[err] = self.error_counter.get(err, 0) + 1
+                self.current_set_error_counter[err] = self.current_set_error_counter.get(err, 0) + 1
         else:
             self.error_counter["Good form"] = self.error_counter.get("Good form", 0) + 1
+            self.current_set_error_counter["Good form"] = self.current_set_error_counter.get("Good form", 0) + 1
 
         print(f"[COUNT] {self.count}/{self.target_count}  "
               f"(set {self.rep_count + 1}/{self.target_reps})")
@@ -281,6 +287,10 @@ class ExerciseSession:
     def _complete_set(self):
         self.rep_count += 1
         self.count = 0  # count reset for next set
+
+        # 이번 세트 집계를 표시용으로 넘기고, 다음 세트를 위해 비운다
+        self.last_set_error_counter = self.current_set_error_counter
+        self.current_set_error_counter = {}
 
         print("-" * 40)
         print(f"[SET DONE] {self.rep_count}/{self.target_reps} set complete.")
